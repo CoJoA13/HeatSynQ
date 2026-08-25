@@ -350,6 +350,31 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**#171 — FIXED 2026-08-25, branch `fix/171-signature-server-revision`.** `UserSignatureControl`
+suppressed a failed signature preview by remembering the exact URL that failed (`brokenSrc`), but the
+URL moved only via a LOCAL `version` counter bumped on THIS browser's upload — so after a
+magic-byte-valid-but-undecodable image failed to render, another admin clearing-and-re-uploading left
+the URL byte-identical and the cell read "Preview unavailable" for a good signature until a reload.
+**Structural fix (the issue's own recommendation): a server revision in the URL.** New nullable
+`User.signatureUpdatedAt`, stamped by BOTH `setSignature` and `clearSignature` (never inferred from
+`updatedAt`, which also moves on a name/role/password edit; the migration
+`20260825035042_user_signature_updated_at` backfills existing signatures to their `updatedAt`).
+`listUsers` surfaces it as `signatureRev` (epoch millis, still BYTES-FREE — the #160 SELECT guard
+holds and is re-pinned), the preview URL cache-busts on it, and the local `version` counter is
+retired. `brokenSrc` is KEPT (a magic-valid-but-undecodable image is discoverable only by this
+browser's `<img> onError`, so "Preview unavailable" is inherently local) but rekeyed to the
+server-revisioned URL, so it retries by construction on ANY change — this browser's OR another
+admin's — closing #171's headline AND the documented replace-serves-stale-bytes residual. Pure
+`signatureSrc`/`signaturePreview` helpers extracted and unit-tested (the
+`ReverseShipmentButton`/`advanceBannerState` precedent; no DOM test env). **Adversarial 5-lens review
+workflow, 1 confirmed of 3:** the confirmed finding — a local upload's preview refresh depended on the
+trailing list reload landing — is fixed by advancing `signatureRev` OPTIMISTICALLY in the page's own
+row update (`applySignatureMutation`, the page being the single owner of both fields, NOT the
+component-local counter that was retired); `signatureUpdatedAt` also added to `SNAPSHOT_SELECT.user`
+per the documented "every scalar except the bytes column" convention. Gates: **3687 tests / 213
+files**, `tsc`/`eslint`/`build` clean, **E2E 25/25**, `manual.html` unchanged. Backlog remaining after
+this: #190 (deferred CI flip), #33.
+
 **Reversals group (#182 + #183 FIXED) — branch `fix-reversals-182-183`, 2026-08-23.** Two
 reversal-interaction issues surfaced by Round 3 Group B (#161's Reverse control + #165's cert
 picker), done together because both turn on reversal identity. **#183 (owner ruling 2026-08-23,

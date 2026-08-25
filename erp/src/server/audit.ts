@@ -367,9 +367,12 @@ export const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   // `user` entry already carries, so `setSignature`'s own `auditedUpdate("user", ...)` never pulls
   // the image bytes into a before/after snapshot in the first place. redact()'s "signatureimage"
   // pattern stays defense-in-depth, not the mechanism relied on to keep them out (CLAUDE.md).
+  // `signatureUpdatedAt` (#171) is one such OTHER scalar — a timestamp, not bytes — so it belongs
+  // here by the same "every scalar except the bytes column" rule the storedDocument entry states.
   user: {
     id: true, username: true, passwordHash: true, displayName: true, title: true, roleId: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
+    signatureUpdatedAt: true,
     // Ordered + stable-field-projected — issue #24 and the PR #152 Codex round, in step with
     // SNAPSHOT_INCLUDE.user (this SELECT is the entry user snapshots actually take; see that
     // entry's comment).

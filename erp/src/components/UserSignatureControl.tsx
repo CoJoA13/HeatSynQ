@@ -54,48 +54,88 @@ import type { Gate } from "@/lib/permission-ui";
  * carrying two meanings). Splitting the channel is what finally makes both unrepresentable: a
  * render failure cannot move server state, and a mutation cannot be undone by a stale read.
  *
- * `brokenSrc` is keyed to the exact URL that failed, not a boolean, so a LOCAL upload yields a new
- * URL (`version` bumps) and retries by construction — no staleness rule to get wrong, which is the
- * mistake rounds 1–3 kept making.
+ * **The URL carries a SERVER revision, and that is what makes the render-failure key correct (#171).**
+ * `src` is `signatureSrc(userId, signatureRev)`, and `signatureRev` (User.signatureUpdatedAt, via
+ * listUsers) MOVES whenever the stored image does — `setSignature` and `clearSignature` both stamp
+ * it. So `brokenSrc`, keyed to that exact URL, retries by construction on ANY change: this browser's
+ * upload, or ANOTHER administrator's clear-and-replace. There is no local counter and no prop-transition
+ * rule to get wrong — the mistake rounds 1–3 kept making, and the exact hole rounds 4–5 left open:
  *
- * **That does NOT extend to a server-side change, and an earlier draft of this note wrongly said it
- * did** (caught in review). The URL carries only the local `version` counter, so if a preview fails
- * and ANOTHER administrator then clears and re-uploads, the flag round-trips false→true while the
- * URL stays identical — and this branch keeps showing "Preview unavailable" without ever
- * re-requesting. It needs a corrupt image plus two other-session mutations to reach, and a reload
- * clears it. Filed rather than patched, because the honest fix is a server-side revision in the URL
- * (which `listUsers` does not yet expose) and this component has already taken five rounds of
- * local rules that each looked right and were not.
+ *   - #171's headline: a preview that failed, then another administrator clears and re-uploads —
+ *     the flag round-trips false→true but the SERVER revision is strictly newer, so on the next list
+ *     load `src` is a new URL and this branch re-requests instead of showing "Preview unavailable"
+ *     forever. (The heal lands when this browser next refetches the list — the same load that
+ *     delivers the flag — not as a live cross-session push; there is no such push anywhere here.)
+ *   - The residual an earlier version of this note stated rather than hid: another administrator
+ *     REPLACING a signature (the flag stays `true` throughout) now also moves the revision, so the
+ *     next list load fetches the new bytes instead of serving the previously fetched ones.
+ *
+ * `brokenSrc` does NOT retire (an earlier sketch on #171 hoped it could): a magic-byte-valid but
+ * undecodable image can only be discovered by THIS browser's `<img> onError`, so the "Preview
+ * unavailable" state is inherently local — the server cannot report it. Keying it to the
+ * server-revisioned URL is precisely what turns that local state from a staleness trap into a
+ * self-healing retry. A LOCAL upload cache-busts at once WITHOUT a per-session counter: the page
+ * owns `signatureRev` and advances it optimistically beside `hasSignature` (`applySignatureMutation`,
+ * page.tsx), so `src` moves even if the trailing reload fails; the reload then reconciles the rev to
+ * the server's true stamp. That optimistic bump is the page's, not this component's — the same
+ * single-owner discipline #160 established for the existence flag.
  *
  * The page's `TitleCell` keyed-remount precedent is still not copied: a remount would discard
- * `error`, `busy`, `version` and `brokenSrc`, all of which are genuinely this component's own.
- *
- * ONE residual, stated rather than hidden: `version` cache-busts only on a LOCAL upload, so if
- * another administrator REPLACES a signature (the flag stays `true` throughout), the browser may
- * keep serving the previously fetched bytes for this URL until a reload. Fixing that would mean
- * re-requesting every signature on every list load, which is exactly the cost #160 removed.
+ * `error`, `busy` and `brokenSrc`, all of which are genuinely this component's own.
  *
  * `gate`: passed straight from the page's own `gateDo(perms, "manage_users")` (§5.16) — every
  * verb on this route requires that same special action, upload and clear both disabled with its
  * tooltip when it's missing, never hidden.
  */
+
+export type SignaturePreview =
+  | { kind: "none" }
+  | { kind: "broken" }
+  | { kind: "image"; src: string };
+
+/** The preview URL for a user's signature. `?v=` is a pure cache-bust token — the GET route ignores
+ *  it and streams the CURRENT bytes — carrying the SERVER revision `signatureRev`
+ *  (User.signatureUpdatedAt, surfaced by listUsers). The URL therefore changes on EVERY change to
+ *  the stored image, this browser's OR another admin's, never on a merely-local counter (#171). */
+export function signatureSrc(userId: string, signatureRev: number | null): string {
+  return `/api/admin/users/${userId}/signature?v=${signatureRev ?? 0}`;
+}
+
+/** Pure render decision, split out for the same reason ReverseShipmentButton / advanceBannerState
+ *  are (no DOM test env): the branch logic is unit-pinnable while the `<img> onError` click stays
+ *  Playwright's. `brokenSrc` is compared to the CURRENT revisioned `src`, so a failure recorded at
+ *  an older revision (or for another user) can never suppress a preview the server has since
+ *  changed — the #171 fix, `tests/user-signature-control.test.tsx`. */
+export function signaturePreview(
+  { userId, hasSignature, signatureRev, brokenSrc }:
+    { userId: string; hasSignature: boolean; signatureRev: number | null; brokenSrc: string | null },
+): SignaturePreview {
+  if (!hasSignature) return { kind: "none" };
+  const src = signatureSrc(userId, signatureRev);
+  if (brokenSrc === src) return { kind: "broken" };
+  return { kind: "image", src };
+}
+
 export function UserSignatureControl(
-  { userId, hasSignature, gate, onSignatureChange }:
-    { userId: string; hasSignature: boolean; gate: Gate; onSignatureChange: (next: boolean) => void },
+  { userId, hasSignature, signatureRev, gate, onSignatureChange }:
+    {
+      userId: string; hasSignature: boolean; signatureRev: number | null; gate: Gate;
+      onSignatureChange: (next: boolean) => void;
+    },
 ) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // NO local copy of "does a signature exist" — see the docblock. `hasSignature` is rendered
   // directly and every MUTATION is reported up through `onSignatureChange`.
-  const [version, setVersion] = useState(0); // cache-busts the <img> src after a local upload
+  //
   // A RENDER failure, which is a different thing from a mutation and must not be reported up
   // (Codex round 5 — doing so was an unbounded request loop; see the docblock). Keyed to the exact
-  // src that failed, so a new upload or a server-side change produces a new URL and retries by
-  // construction, with no comparison rule to get wrong.
+  // src that failed; because `src` carries the SERVER revision, a new upload or ANOTHER admin's
+  // change produces a new URL and retries by construction, with no comparison rule to get wrong.
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const path = `/api/admin/users/${userId}/signature`;
-  const src = `${path}?v=${version}`;
+  const preview = signaturePreview({ userId, hasSignature, signatureRev, brokenSrc });
 
   async function readError(res: Response, fallback: string): Promise<never> {
     const body = await res.json().catch(() => ({}));
@@ -112,8 +152,10 @@ export function UserSignatureControl(
       const res = await fetch(path, { method: "PUT", body: form });
       if (!res.ok) await readError(res, `Upload failed (${res.status})`);
       setError(null);
+      // Report the mutation up: the page advances `signatureRev` optimistically (so `src` moves at
+      // once, even if its reload fails) and then RELOADS to reconcile the rev to the server stamp —
+      // replacing the old per-session `version` counter this component used to keep (#171).
       onSignatureChange(true);
-      setVersion((v) => v + 1);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -141,9 +183,9 @@ export function UserSignatureControl(
 
   return (
     <span className="flex items-center gap-2">
-      {!hasSignature ? (
+      {preview.kind === "none" ? (
         <span className="text-xs text-slate-400">No signature</span>
-      ) : brokenSrc === src ? (
+      ) : preview.kind === "broken" ? (
         // The server HAS a signature; this browser could not render these bytes. Saying "No
         // signature" here would be a lie, and Clear stays enabled because there is something to
         // clear.
@@ -155,9 +197,9 @@ export function UserSignatureControl(
         // business rewriting.
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={src}
+          src={preview.src}
           alt={`Signature for user ${userId}`}
-          onError={() => setBrokenSrc(src)}
+          onError={() => setBrokenSrc(preview.src)}
           className="h-8 w-20 rounded border bg-white object-contain"
         />
       )}
