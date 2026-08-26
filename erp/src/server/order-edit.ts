@@ -13,7 +13,7 @@ import { decimalField } from "./decimal-field";
 import { getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { createCert } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
-import { claimOrder } from "./order-locks";
+import { claimOrder, claimOrdersInOrder } from "./order-locks";
 import {
   finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, applicationVoidHintForOrder,
 } from "./invoice-guards";
@@ -534,21 +534,21 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    // Both sides are claimed through claimOrder, but in a FIXED (sorted) order rather than
-    // argument order: `id` and `otherId` are two independent locks on two different Order rows,
-    // and claiming them in ARGUMENT order would let a concurrent `linkOrder(A, B)` and
-    // `linkOrder(B, A)` pair each hold one row while waiting on the other's — a genuine Postgres
-    // deadlock (40P01), which — unlike the 40001 every OTHER pair of transactions racing on ONE
-    // shared row gets (db-errors.ts's `isRawSerializationFailure`) — has no mapping here and would
-    // surface as an unmapped 500, exactly what this fix wave refuses to let happen elsewhere
-    // (finding 2). Sorting first makes every caller agree on lock order, so the second claim can
-    // only ever wait, never deadlock.
-    const firstId = id < otherId ? id : otherId;
-    const secondId = id < otherId ? otherId : id;
-    const first = await claimOrder(tx, firstId);
-    const second = await claimOrder(tx, secondId);
-    const order = firstId === id ? first : second;
-    const other = firstId === id ? second : first;
+    // #214: an UNCLAIMED stub pass first, so the claim below can be ONE ordered statement over
+    // the FULL write set — argument rows AND, for a both-groups merge, every absorbed member.
+    // The old shape claimed the two argument rows (sorted) and let each member write acquire
+    // its own lock through auditedUpdate's per-row claim in findMany order — and a loop of
+    // per-row claims, even a sorted one, reopens the ABBA window between statements
+    // (order-locks.ts's own rule): two merges over overlapping groups could each hold members
+    // the other wanted. Postgres breaks that cycle with 40P01, which #90 maps to the honest 409
+    // — so the cost was a deadlock_timeout stall plus a spurious "try again" for a collision
+    // the one-statement claim makes wait-only. (An earlier comment here called 40P01 unmapped;
+    // that predates #90.) Validating on the stubs is sound at Serializable: every read in this
+    // transaction shares one snapshot, and the claim's FOR UPDATE aborts with 40001 — mapped to
+    // the same 409 — the moment any claimed row changed after that snapshot, so a stale
+    // validation can never survive to the writes.
+    const order = await tx.order.findFirst({ where: { id } });
+    const other = await tx.order.findFirst({ where: { id: otherId } });
 
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
     if (!other || other.deletedAt !== null) throw new HttpError(404, "Order not found");
@@ -588,6 +588,11 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
       toUpdate = [id, otherId];
     }
 
+    // The ONE claim: both argument rows plus every row the branch above decided to write,
+    // deduplicated and ascending in a single statement (claimOrdersInOrder) — the only lock
+    // acquisition in this transaction, so no second, differently-ordered claim path exists.
+    await claimOrdersInOrder(tx, [id, otherId, ...toUpdate]);
+
     for (const memberId of toUpdate) {
       await auditedUpdate("order", memberId, () =>
         tx.order.update({ where: { id: memberId }, data: { linkGroupId: groupId } }), { tx });
@@ -611,7 +616,13 @@ export async function unlinkOrder(id: string): Promise<OrderDetail> {
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await claimOrder(tx, id);
+    // #214: unclaimed stub pass, then ONE ordered claim over the full write set — linkOrder's
+    // shape, for the same reason: the cascade's survivor write used to take its lock through
+    // auditedUpdate's per-row claim, so `unlinkOrder(A)` racing `unlinkOrder(B)` on group {A,B}
+    // was a genuine ABBA cycle (T1 holds A wants B, T2 holds B wants A → 40P01, a
+    // deadlock_timeout stall answered as #90's 409). Stub validation is sound at Serializable —
+    // one snapshot per transaction, and the claim 40001s on any drift (see linkOrder).
+    const order = await tx.order.findFirst({ where: { id } });
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     // Every OTHER member of this order's CURRENT group, read before this order's own row is
@@ -626,12 +637,15 @@ export async function unlinkOrder(id: string): Promise<OrderDetail> {
         where: { linkGroupId: order.linkGroupId, id: { not: id } }, select: { id: true, deletedAt: true },
       })
       : [];
+    const survivorId =
+      groupmates.length === 1 && groupmates[0].deletedAt === null ? groupmates[0].id : null;
+
+    await claimOrdersInOrder(tx, survivorId ? [id, survivorId] : [id]);
 
     await auditedUpdate("order", id, () =>
       tx.order.update({ where: { id }, data: { linkGroupId: null } }), { tx });
 
-    if (groupmates.length === 1 && groupmates[0].deletedAt === null) {
-      const survivorId = groupmates[0].id;
+    if (survivorId) {
       await auditedUpdate("order", survivorId, () =>
         tx.order.update({ where: { id: survivorId }, data: { linkGroupId: null } }), { tx });
     }
