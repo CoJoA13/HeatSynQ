@@ -42,13 +42,16 @@ export const GET = handle(async (req) => {
 });
 
 // POST /api/receivables/applications — apply a payment across one or more invoices in ONE sorted
-// claim (Task 7, P5B §4.1). A body carrying ANY WRITE_OFF line additionally requires the
-// `write_off` special action (spec §9, Task 16) — `receivables.create` alone lets a session
-// record PAYMENT/DISCOUNT lines but not waive a balance. Gate order: mustCan(create) → parse →
-// conditional mustDo(write_off) → delegate.
+// claim (Task 7, P5B §4.1). Applying cash is the spec's named dangerous action `apply_payments`
+// (#211, owner ruling 2026-08-25 — declared since 5B, enforced from here on): `receivables.create`
+// alone records payments and batches but does not move cash onto invoices. A body carrying ANY
+// WRITE_OFF line additionally requires the `write_off` special action (spec §9, Task 16). Gate
+// order: mustCan(create) → mustDo(apply_payments) → parse → conditional mustDo(write_off) →
+// delegate.
 export const POST = handle(async (req) => {
   const user = requireUser();
   mustCan(user, "receivables", "create");
+  mustDo(user, "apply_payments");
   const body: unknown = await req.json();
   if (hasWriteOffLine(body)) mustDo(user, "write_off");
   await applyPayment(body);

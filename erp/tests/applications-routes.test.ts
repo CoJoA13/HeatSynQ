@@ -70,8 +70,8 @@ async function makePayment(customerId: string, amount: number): Promise<string> 
 }
 
 describe("applications routes", () => {
-  it("POST applies a payment for a create-authorized user", async () => {
-    const cookie = await signInWith(["receivables.create"]);
+  it("POST applies a payment for a caller holding receivables.create AND action.apply_payments", async () => {
+    const cookie = await signInWith(["receivables.create", "action.apply_payments"]);
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
     const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
@@ -91,7 +91,7 @@ describe("applications routes", () => {
   });
 
   it("POST refuses a payment line targeting an unrelated customer's invoice (400)", async () => {
-    const cookie = await signInWith(["receivables.create"]);
+    const cookie = await signInWith(["receivables.create", "action.apply_payments"]);
     const payerInv = await finalizedInvoice(1000);
     const strangerInv = await finalizedInvoice(1000); // a different, unrelated customer
     const paymentId = await makePayment(payerInv.customerId, 600);
@@ -112,8 +112,24 @@ describe("applications routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("POST refuses a WRITE_OFF line without action.write_off, even holding receivables.create (403)", async () => {
-    const cookie = await signInWith(["receivables.create"], "wo-no-special");
+  // #211 (owner ruling, 2026-08-25): applying cash is the spec's named dangerous action
+  // `apply_payments` — `receivables.create` alone records payments/batches but no longer applies
+  // them. The cookie deliberately HOLDS receivables.create, so the only 403 this request can
+  // produce is the apply_payments gate — with that mustDo deleted, the apply succeeds (200) and
+  // the count assertion reds. (The #233 lesson: never let a different layer's 403 satisfy the test.)
+  it("POST refuses a caller without action.apply_payments, even holding receivables.create (403)", async () => {
+    const cookie = await signInWith(["receivables.create"], "ap-no-special");
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
+      paymentId, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 600 }],
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  it("POST refuses a WRITE_OFF line without action.write_off, even holding receivables.create and apply_payments (403)", async () => {
+    const cookie = await signInWith(["receivables.create", "action.apply_payments"], "wo-no-special");
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
     const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
@@ -124,7 +140,7 @@ describe("applications routes", () => {
   });
 
   it("POST applies a WRITE_OFF line for a session holding receivables.create AND action.write_off", async () => {
-    const cookie = await signInWith(["receivables.create", "action.write_off"], "wo-with-special");
+    const cookie = await signInWith(["receivables.create", "action.apply_payments", "action.write_off"], "wo-with-special");
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
     const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
@@ -142,14 +158,14 @@ describe("applications routes", () => {
       { invoiceId: inv.invoiceId, type: "WRITE_OFF", amount: 100, reason: "small remainder" },
     ];
 
-    const withoutSpecial = await signInWith(["receivables.create"], "wo-mixed-wrong");
+    const withoutSpecial = await signInWith(["receivables.create", "action.apply_payments"], "wo-mixed-wrong");
     const denied = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", withoutSpecial, {
       paymentId, lines: mixedLines,
     }), noParams);
     expect(denied.status).toBe(403);
     expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
 
-    const withSpecial = await signInWith(["receivables.create", "action.write_off"], "wo-mixed-ok");
+    const withSpecial = await signInWith(["receivables.create", "action.apply_payments", "action.write_off"], "wo-mixed-ok");
     const allowed = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", withSpecial, {
       paymentId, lines: mixedLines,
     }), noParams);
@@ -247,7 +263,7 @@ describe("applications routes", () => {
   });
 
   it("GET ?paymentId=&invoiceId= reflects a balance already reduced by a prior application", async () => {
-    const cookie = await signInWith(["receivables.create", "receivables.view"]);
+    const cookie = await signInWith(["receivables.create", "action.apply_payments", "receivables.view"]);
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
     await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
@@ -324,7 +340,7 @@ describe("applications routes", () => {
   });
 
   it("DELETE refuses a caller without receivables.delete (403)", async () => {
-    const createCookie = await signInWith(["receivables.create"], "del-403-creator");
+    const createCookie = await signInWith(["receivables.create", "action.apply_payments"], "del-403-creator");
     const wrong = await signInWith(["receivables.edit"], "del-403-wrong");
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
@@ -339,7 +355,7 @@ describe("applications routes", () => {
   });
 
   it("DELETE voids an application with a reason", async () => {
-    const createCookie = await signInWith(["receivables.create"], "creator");
+    const createCookie = await signInWith(["receivables.create", "action.apply_payments"], "creator");
     const deleteCookie = await signInWith(["receivables.delete"], "deleter");
     const inv = await finalizedInvoice(1000);
     const paymentId = await makePayment(inv.customerId, 600);
@@ -355,8 +371,8 @@ describe("applications routes", () => {
 });
 
 describe("credit-applications route", () => {
-  it("POST applies a credit for a create-authorized user", async () => {
-    const cookie = await signInWith(["receivables.create"]);
+  it("POST applies a credit for a caller holding receivables.create AND action.apply_payments", async () => {
+    const cookie = await signInWith(["receivables.create", "action.apply_payments"]);
     const inv = await finalizedInvoice(1000);
     const credit = await finalizedCredit(-500, inv.customerId); // same customer/family
     const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
@@ -367,7 +383,7 @@ describe("credit-applications route", () => {
   });
 
   it("POST refuses a credit applied to an unrelated customer's invoice (400)", async () => {
-    const cookie = await signInWith(["receivables.create"]);
+    const cookie = await signInWith(["receivables.create", "action.apply_payments"]);
     const credit = await finalizedCredit(-500);
     const strangerInv = await finalizedInvoice(1000); // a different, unrelated customer
     const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
@@ -381,6 +397,19 @@ describe("credit-applications route", () => {
     const cookie = await signInWith(["receivables.view"]);
     const credit = await finalizedCredit(-500);
     const inv = await finalizedInvoice(1000);
+    const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
+      creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  // #211: same falsifiability construction as the applications-route twin above — the cookie
+  // holds receivables.create, so this 403 can only be the apply_payments gate.
+  it("POST refuses a caller without action.apply_payments, even holding receivables.create (403)", async () => {
+    const cookie = await signInWith(["receivables.create"], "credit-ap-no-special");
+    const credit = await finalizedCredit(-500);
+    const inv = await finalizedInvoice(1000, credit.customerId);
     const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     }), noParams);
