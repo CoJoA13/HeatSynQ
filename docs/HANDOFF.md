@@ -105,6 +105,30 @@ resolved after the sweep executes under the lock, awaited before the attempt —
 sleep cannot establish that ordering). Round 3 clean. Gates: **3709 tests / 215 files**,
 `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI.
 
+**2026-08-26 — the concurrency pair MERGED (`cff3f7d`, PR #244, squash), closing #214 and
+#215.** `linkOrder`/`unlinkOrder` now run applications.ts's established shape — an UNCLAIMED
+stub pass computes the full write set, then **ONE `claimOrdersInOrder` statement** acquires
+every lock — closing the ABBA window where the merge's member writes and the unlink cascade's
+survivor write took their locks through `auditedUpdate`'s per-row claim in `findMany` order
+(`unlinkOrder(A)` vs `unlinkOrder(B)` on group {A,B} was a genuine 40P01: a deadlock_timeout
+stall answered as #90's mapped 409 — the audit issue's and the old comment's "unmapped 500"
+clause predated #90 and was corrected in place). **The design detour is the lesson**: claiming
+the members AFTER the sorted argument claims — the obvious minimal fix — still cycles ACROSS
+transactions (two ordered statements per transaction re-open the window between them), so the
+one-statement-per-transaction shape is the only correct one. The mechanism is pinned
+DETERMINISTICALLY, not by racing (`tests/order-link-locks.test.ts`): hold a lock on a row the
+call must write but was never given as an argument, and assert via `pg_stat_activity` that the
+blocked statement is the ordered claim — pre-fix the waiter was the per-row audit claim, and
+both tests red. And `familyCustomerIds` (#215, the #60 class) gained the mandated trailing
+`db: Prisma.TransactionClient = prisma`, with `tx` passed at both Serializable call sites
+(`applyPaymentInTx`/`applyCreditInTx`) and the singleton default kept for the un-transactional
+`openInvoicesForPayer`, pinned by the canonical tx-visibility test. Gates: **3714 tests / 216
+files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI. **Recorded honestly:
+no Codex review record ever appeared on this PR** — the first of the session's four without
+one (not a clean pass, an absence; CI's three required checks were green and the merge
+proceeded on them). Audit tally: **8 of the 29 filed issues closed** — #211–#215, #217–#218,
+#225; the session-security and audit-highs entries above carry their stories.
+
 **Fix MERGED to `main` as `a5aac43` (PR #114, squash, 2026-08-16) — `allocateNumber`'s counter-row
 seed is now atomic.** Standing up the
 build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
