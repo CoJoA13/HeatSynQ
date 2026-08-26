@@ -442,13 +442,22 @@ export type OpenInvoiceRow = {
   invoiceDate: string; dueDate: string | null; total: number; open: number;
 };
 
-async function familyCustomerIds(customerId: string): Promise<string[]> {
-  const payer = await prisma.customer.findFirst({
+/** The trailing `db` is the #60 rule's shape (#215): applyPaymentInTx/applyCreditInTx call this
+ *  from INSIDE their open Serializable transactions and must pass their `tx` — on the singleton
+ *  the read runs on a SECOND connection, outside the transaction's snapshot and SSI read-set,
+ *  while holding the transaction's pooled connection to acquire another. The default serves the
+ *  un-transactional callers (openInvoicesForPayer), not the transactional ones. Exported for the
+ *  deterministic tx-visibility pin in applications-concurrency.test.ts. */
+export async function familyCustomerIds(
+  customerId: string,
+  db: Prisma.TransactionClient = prisma,
+): Promise<string[]> {
+  const payer = await db.customer.findFirst({
     where: { id: customerId, deletedAt: null }, select: { id: true, parentId: true },
   });
   if (!payer) throw new HttpError(404, "Customer not found");
   const rootId = payer.parentId ?? payer.id;
-  const children = await prisma.customer.findMany({
+  const children = await db.customer.findMany({
     where: { parentId: rootId, deletedAt: null }, select: { id: true },
   });
   return [...new Set([rootId, payer.id, ...children.map((c) => c.id)])];
@@ -790,7 +799,7 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   // the payer's family, else this call would settle customer B's balance with customer A's cash.
   // The invoice's `customerId` is frozen paper (nothing updates it), so validating it here in the
   // unlocked stub pass is sufficient — there is nothing to re-read under the claim.
-  const payerFamily = new Set(await familyCustomerIds(paymentStub.customerId));
+  const payerFamily = new Set(await familyCustomerIds(paymentStub.customerId, tx));
   for (const id of invoiceIds) {
     if (!payerFamily.has(stubById.get(id)!.customerId)) {
       throw new HttpError(400, "That invoice belongs to a customer outside this payment's family");
@@ -1117,7 +1126,7 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
   // A credit applies only within its OWN customer's family (§4.1/§5) — never to an unrelated
   // customer. Both `customerId`s are frozen paper (nothing updates them), so validating here in the
   // unlocked stub pass is sufficient — there is nothing to re-read under the claim.
-  const creditFamily = new Set(await familyCustomerIds(creditStub.customerId));
+  const creditFamily = new Set(await familyCustomerIds(creditStub.customerId, tx));
   if (!creditFamily.has(invoiceStub.customerId)) {
     throw new HttpError(400, "That invoice belongs to a customer outside this credit's family");
   }
