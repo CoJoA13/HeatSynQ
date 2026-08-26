@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+/* Light-only BY DECISION (#212): the create-next-app scaffold shipped an OS-dark-preference
+ * media block here that flipped body text to #ededed under components that are all hardcoded
+ * light (bg-white cards, zero dark: variants), so a dark-preferring OS rendered most text at
+ * ~1.2:1 on white. Dark-mode support, if ever wanted, arrives as themed components — never as a
+ * root color flip. No --font-sans/--font-mono override either (#225): the scaffold mapped them
+ * to Geist variables nothing defines (the next/font loading was removed), which made every
+ * font-mono utility an invalid declaration that silently fell back to Arial; without the
+ * override, Tailwind's own stacks apply to the utilities. Both commitments are pinned by
+ * tests/globals-css.test.ts, whose detectors this comment must not quote (the board-search-scan
+ * precedent: describe the anti-pattern in prose, never verbatim). */
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -8,15 +18,6 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
