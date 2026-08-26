@@ -19,7 +19,12 @@ export const POST = handle(async (req) => {
   if (!body.success) return NextResponse.json(INVALID_CREDENTIALS, { status: 401 });
   const user = await authenticateUser(body.data.username, body.data.password);
   if (!user) return NextResponse.json(INVALID_CREDENTIALS, { status: 401 });
-  const { token } = await createSession(user.id);
+  // A null here means the fence refused: the credential this login verified has already been
+  // replaced by a concurrent password reset (#218 review P1) — the same generic 401 as a wrong
+  // password, which is exactly what the old password now is.
+  const session = await createSession(user.id, user.verifiedPasswordHash);
+  if (!session) return NextResponse.json(INVALID_CREDENTIALS, { status: 401 });
+  const { token } = session;
   const res = NextResponse.json({ ok: true, displayName: user.displayName });
   // #217: a browser-session cookie, deliberately — no `expires`. The cookie used to carry the
   // fixed expiresAt stamped at login, so the BROWSER deleted it session_timeout_minutes after
