@@ -10,6 +10,43 @@ import { runWithContext } from "@/server/context";
 describe("users service", () => {
   beforeEach(async () => await truncateAll());
 
+  // #218: a password reset exists to cut off whoever holds the old credential — so it must also
+  // cut off whoever holds a SESSION minted under it, or a stolen/lingering session survives the
+  // reset and the sliding expiry keeps it alive indefinitely. Deactivation gets the same sweep
+  // (getSessionUser already refuses inactive users, so that half is hygiene, not the hole).
+  async function seedSession(userId: string, tokenHash: string) {
+    await prisma.session.create({
+      data: { tokenHash, userId, expiresAt: new Date(Date.now() + 60 * 60_000) },
+    });
+  }
+
+  it("password change deletes the target's sessions and only theirs (#218)", async () => {
+    const { id } = await createUser({ username: "jane", displayName: "Jane", password: "pw12345" });
+    const other = await createUser({ username: "bob", displayName: "Bob", password: "pw12345" });
+    await seedSession(id, "jane-1");
+    await seedSession(id, "jane-2");
+    await seedSession(other.id, "bob-1");
+
+    await updateUser(id, { password: "newpw999" });
+
+    expect(await prisma.session.count({ where: { userId: id } })).toBe(0);
+    expect(await prisma.session.count({ where: { userId: other.id } })).toBe(1);
+  });
+
+  it("a non-password update leaves sessions alone (#218)", async () => {
+    const { id } = await createUser({ username: "jane", displayName: "Jane", password: "pw12345" });
+    await seedSession(id, "jane-1");
+    await updateUser(id, { displayName: "Jane R." });
+    expect(await prisma.session.count({ where: { userId: id } })).toBe(1);
+  });
+
+  it("deactivation deletes the target's sessions too (#218)", async () => {
+    const { id } = await createUser({ username: "jane", displayName: "Jane", password: "pw12345" });
+    await seedSession(id, "jane-1");
+    await updateUser(id, { active: false });
+    expect(await prisma.session.count({ where: { userId: id } })).toBe(0);
+  });
+
   it("creates a user with a hashed password and lists it", async () => {
     const { id } = await createUser({ username: "jane", displayName: "Jane", password: "pw12345" });
     const row = await prisma.user.findUniqueOrThrow({ where: { id } });

@@ -131,8 +131,8 @@ export async function updateUser(
 
   await withDbErrors({ entity: "User" }, () =>
     prisma.$transaction((tx) =>
-      auditedUpdate("user", id, async () =>
-        tx.user.update({
+      auditedUpdate("user", id, async () => {
+        const updated = await tx.user.update({
           where: { id },
           data: {
             ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
@@ -141,7 +141,21 @@ export async function updateUser(
             ...(input.active !== undefined ? { active: input.active } : {}),
             ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
           },
-        }), { tx })));
+        });
+        // #218: a password reset must cut off every session minted under the old credential, or
+        // a stolen/lingering session survives the reset and the sliding expiry keeps it alive
+        // indefinitely; deactivation gets the same sweep as hygiene (getSessionUser already
+        // refuses inactive users). Same transaction as the update, so a failed save deletes
+        // nothing. Session rows are ephemeral auth state, not an audited entity — the audit
+        // trail is this user-update entry, matching logout's unaudited destroySession. Password
+        // change is admin-route-only (no self-service route exists), and an admin resetting
+        // their OWN password logs themselves out too — deliberate: simpler than threading the
+        // acting token down here, and the safe direction.
+        if (input.password || input.active === false) {
+          await tx.session.deleteMany({ where: { userId: id } });
+        }
+        return updated;
+      }, { tx })));
 }
 
 export async function setUserOverrides(id: string, overrides: { permission: string; mode: "GRANT" | "DENY" }[]) {
