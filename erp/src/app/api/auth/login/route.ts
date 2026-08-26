@@ -19,13 +19,20 @@ export const POST = handle(async (req) => {
   if (!body.success) return NextResponse.json(INVALID_CREDENTIALS, { status: 401 });
   const user = await authenticateUser(body.data.username, body.data.password);
   if (!user) return NextResponse.json(INVALID_CREDENTIALS, { status: 401 });
-  const { token, expiresAt } = await createSession(user.id);
+  const { token } = await createSession(user.id);
   const res = NextResponse.json({ ok: true, displayName: user.displayName });
+  // #217: a browser-session cookie, deliberately — no `expires`. The cookie used to carry the
+  // fixed expiresAt stamped at login, so the BROWSER deleted it session_timeout_minutes after
+  // login regardless of activity while getSessionUser slid the DB row forward on every request:
+  // the sliding expiry never reached the client and active users were logged out mid-shift.
+  // With no client-side lifetime the server-side sliding expiry is the only clock. Accepted
+  // residual: closing the browser within the timeout window drops the session where the old
+  // cookie would have survived a restart — for an office app with an idle timeout, the safer
+  // direction.
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    expires: expiresAt,
   });
   return res;
 });

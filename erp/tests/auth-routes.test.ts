@@ -28,6 +28,22 @@ describe("auth routes", () => {
     expect(res.headers.get("set-cookie")).toContain("erp_session=");
   });
 
+  // #217: the cookie must carry NO client-side lifetime. A fixed `Expires` stamped at login made
+  // the browser delete the cookie session_timeout_minutes after LOGIN regardless of activity,
+  // while getSessionUser slid the DB row forward on every request — the documented sliding expiry
+  // never reached the client, logging active users out mid-shift. A browser-session cookie leaves
+  // the server-side expiry as the only clock. (The logout route still expires ITS cookie — that
+  // is how a cookie is deleted — this pin is on the login cookie only.)
+  it("issues a browser-session cookie with no Expires or Max-Age — the sliding DB expiry alone governs (#217)", async () => {
+    const res = await login(jsonReq("http://t/api/auth/login", { username: "admin", password: "secret1" }), TEST_CTX);
+    const cookie = res.headers.get("set-cookie")!;
+    expect(cookie).toContain("erp_session=");
+    expect(cookie).toMatch(/httponly/i);
+    expect(cookie).toMatch(/samesite=lax/i);
+    expect(cookie).not.toMatch(/expires=/i);
+    expect(cookie).not.toMatch(/max-age=/i);
+  });
+
   it("rejects bad credentials with a generic message", async () => {
     const res = await login(jsonReq("http://t/api/auth/login", { username: "admin", password: "nope" }), TEST_CTX);
     expect(res.status).toBe(401);
