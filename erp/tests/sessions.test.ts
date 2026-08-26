@@ -75,26 +75,71 @@ describe("sessions", () => {
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
   });
 
-  it("a login racing a password reset can never keep a session minted under the old hash", async () => {
-    const user = await makeUser(); // stored hash "x"
-    // updateUser's exact shape at the worst interleaving: the row claimed FOR NO KEY UPDATE
-    // (auditedUpdate's before-snapshot claim), the hash rewritten, the session sweep ALREADY
-    // EXECUTED — and the transaction held open while a login that verified the OLD hash tries
-    // to insert. An unfenced insert succeeds here (an FK insert takes only KEY SHARE, which
-    // NO KEY UPDATE does not block) and the stale session survives the sweep.
-    let release: () => void;
+  it("refuses to mint a session for an inactive or soft-deleted user, even under the current hash", async () => {
+    // The fence's eligibility half (PR #242 round 2): deactivation leaves passwordHash
+    // untouched, so a hash-only fence would mint a session for an account the admin just shut
+    // off — inert while inactive (getSessionUser refuses), but RESURRECTED the moment the
+    // active checkbox is re-ticked, without a new login.
+    const inactive = await makeUser("switched-off");
+    await prisma.user.update({ where: { id: inactive.id }, data: { active: false } });
+    expect(await createSession(inactive.id, "x")).toBeNull();
+
+    const deleted = await makeUser("soft-deleted");
+    await prisma.user.update({ where: { id: deleted.id }, data: { deletedAt: new Date() } });
+    expect(await createSession(deleted.id, "x")).toBeNull();
+
+    expect(await prisma.session.count()).toBe(0);
+  });
+
+  /**
+   * updateUser's exact shape at the worst interleaving: the row claimed FOR NO KEY UPDATE
+   * (auditedUpdate's before-snapshot claim), the credential-relevant column rewritten, the
+   * session sweep ALREADY EXECUTED — and the transaction held open while a login that verified
+   * the pre-change state tries to insert. An unfenced insert succeeds here (an FK insert takes
+   * only KEY SHARE, which NO KEY UPDATE does not block) and the stale session survives the
+   * sweep. The `swept` signal resolves only after deleteMany has EXECUTED with the lock held,
+   * and the attempt starts only after awaiting it (round-2 review finding): a wall-clock sleep
+   * cannot establish that ordering, and without it a slow transaction start lets the attempt
+   * legitimately win the race and the test fail against a correct fence. After `swept`, the
+   * outcome is deterministic wherever the attempt lands — blocked on the lock until commit, or
+   * arriving after it — because both paths read the post-change row.
+   */
+  async function raceLoginAgainst(
+    userId: string,
+    change: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<unknown>,
+  ) {
+    let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
+    let sweptDone!: () => void;
+    const swept = new Promise<void>((r) => { sweptDone = r; });
     const reset = prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${user.id} FOR NO KEY UPDATE`;
-      await tx.user.update({ where: { id: user.id }, data: { passwordHash: "new-hash" } });
-      await tx.session.deleteMany({ where: { userId: user.id } });
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
+      await change(tx);
+      await tx.session.deleteMany({ where: { userId } });
+      sweptDone();
       await held;
     });
-    const attempt = createSession(user.id, "x");
-    await new Promise((r) => setTimeout(r, 200));
-    release!();
+    await swept;
+    const attempt = createSession(userId, "x");
+    await new Promise((r) => setTimeout(r, 200)); // let the attempt genuinely block on the lock
+    release();
     await reset;
-    expect(await attempt).toBeNull();
+    return attempt;
+  }
+
+  it("a login racing a password reset can never keep a session minted under the old hash", async () => {
+    const user = await makeUser(); // stored hash "x"
+    const attempt = await raceLoginAgainst(user.id, (tx) =>
+      tx.user.update({ where: { id: user.id }, data: { passwordHash: "new-hash" } }));
+    expect(attempt).toBeNull();
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+  });
+
+  it("a login racing a deactivation can never keep a session the reactivation would resurrect", async () => {
+    const user = await makeUser("raced-off"); // stored hash "x", active
+    const attempt = await raceLoginAgainst(user.id, (tx) =>
+      tx.user.update({ where: { id: user.id }, data: { active: false } }));
+    expect(attempt).toBeNull();
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
   });
 

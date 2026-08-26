@@ -20,16 +20,21 @@ function hashToken(token: string): string {
  * same transaction as the insert. FOR SHARE conflicts with the FOR NO KEY UPDATE claim every
  * auditedUpdate takes on its row before the before-snapshot, so login and reset serialize —
  * whichever commits first, either the sweep sees this session and deletes it, or this re-read
- * sees the new hash and refuses. Returns null on a stale hash (caller answers 401): the
- * credential the login checked has already been replaced.
+ * sees the new hash and refuses. The locked read checks ELIGIBILITY too, not just the hash
+ * (round-2 review finding): a deactivation leaves passwordHash untouched, so a hash-only fence
+ * would mint a session for the account the admin just shut off — inert while inactive
+ * (getSessionUser refuses), but resurrected the moment the active checkbox is re-ticked,
+ * without a new login. Returns null on any of it (caller answers the generic 401): the
+ * credential or account the login checked is already gone.
  */
 export async function createSession(userId: string, verifiedPasswordHash: string) {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + (await timeoutMinutes()) * 60_000);
   const inserted = await prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<{ passwordHash: string }[]>`
-      SELECT "passwordHash" FROM "User" WHERE "id" = ${userId} FOR SHARE`;
-    if (rows[0]?.passwordHash !== verifiedPasswordHash) return false;
+    const rows = await tx.$queryRaw<{ passwordHash: string; active: boolean; deletedAt: Date | null }[]>`
+      SELECT "passwordHash", "active", "deletedAt" FROM "User" WHERE "id" = ${userId} FOR SHARE`;
+    const row = rows[0];
+    if (!row || row.passwordHash !== verifiedPasswordHash || !row.active || row.deletedAt) return false;
     await tx.session.create({ data: { tokenHash: hashToken(token), userId, expiresAt } });
     return true;
   });
