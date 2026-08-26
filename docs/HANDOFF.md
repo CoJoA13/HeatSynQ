@@ -60,6 +60,31 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-08-25 — THE MACHINE MOVED TO UBUNTU 26.04, a full-codebase audit ran, and its four
+worst findings are FIXED (merged `30dcf6c`, PR #240, squash).** The Fedora desktop was replaced;
+standing the build up needed `npm install` + `.env` + `prisma generate`, the docker group
+(`usermod -aG docker` + re-login), `postgresql-client-18` (client ONLY — the bare `postgresql`
+package auto-starts a server and pg_wrapper can hand back the wrong `pg_dump` major), a
+`npx playwright install chromium` (the browser cache does not travel with a checkout), and a
+repo-local git identity. Every gate then passed unchanged on the new OS. The audit (70 agents:
+13 code dimensions + 4 screenshot reviewers, every code finding adversarially verified at HEAD)
+produced **52 verified findings — filed as issues #211–#239** (3 high, 32 medium, 17 low, plus a
+49-item screen-polish backlog in #239); the report artifact carries the evidence. **PR #240
+closed the three highs plus #225**: the scaffold's OS-dark-preference block deleted (light-only
+BY DECISION — most text rendered ~1.2:1 on white for dark-preferring users) and the dangling
+Geist font mappings dropped (all 40+ `font-mono` sites silently fell back to Arial), both pinned
+by `tests/globals-css.test.ts`; `company_address` joined `TEXTAREA_KEYS` (the one-line input
+swallowed the letterhead's `\n` AND wrote the mangled value back on blur-save — round-tripped
+live); and **`apply_payments` is ENFORCED (owner ruling 2026-08-25: wire it, not remove it —
+spec §15 row)** on both apply routes, with the standalone write-off route deliberately not
+widened, UI gates composed §5.16-style, and TWO backfill migrations (roles holding
+`receivables.create`, then — Codex's P1 on the PR, the one review finding — users holding a
+GRANT override on it; the applied first migration was extended by a second, never edited, the
+manage_backups precedent). Gates after (CI's own tally on the merged head): **3700 tests / 215
+files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally AND in CI, **54 migrations**. Fedora-era docs (§8 below,
+CLAUDE.md's environment notes, README) are STALE for this machine — the rewrite is **#235**,
+`ready-for-agent`, and until it lands read §8's Fedora commands as historical.
+
 **Fix MERGED to `main` as `a5aac43` (PR #114, squash, 2026-08-16) — `allocateNumber`'s counter-row
 seed is now atomic.** Standing up the
 build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
