@@ -451,7 +451,18 @@ export function BatchDetail({ id }: { id: string }) {
   // `statusLocked` — on-account cash stays appliable to a later invoice from the same payment even
   // after the batch is POSTED, and `applyPayment` itself performs no batch-status check (see
   // `statusLocked`'s own comment).
-  const applyGateRaw = gate(perms, "receivables.create");
+  // #211 (owner ruling, 2026-08-25): applying cash also takes the `apply_payments` named action —
+  // `receivables.create` alone records payments (createPaymentGate below stays create-only) but
+  // does not move cash onto invoices, matching what POST /api/receivables/applications now
+  // enforces. Combined with the whichever-is-actually-the-blocker title, the same shape as the
+  // write-off pair directly below (which composes off THIS gate and so inherits the action).
+  const createGateRaw = gate(perms, "receivables.create");
+  const applyActionGateRaw = gateDo(perms, "apply_payments");
+  const applyBlocked = createGateRaw.disabled || applyActionGateRaw.disabled;
+  const applyGateRaw: Gate = {
+    allowed: !applyBlocked, disabled: applyBlocked,
+    title: createGateRaw.disabled ? createGateRaw.title : applyActionGateRaw.title,
+  };
   const writeOffGateRaw = gateDo(perms, "write_off");
   const writeOffDisabled = applyGateRaw.disabled || writeOffGateRaw.disabled;
   const writeOffGateCombined: Gate = {

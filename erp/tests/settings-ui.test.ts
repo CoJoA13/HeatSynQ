@@ -22,10 +22,17 @@ describe("settings page widget selection (Task 12 Step 0a/0b)", () => {
   });
 
   it("no longer special-cases the retired standing-text keys — they render as plain text now", () => {
-    // cert_statement / shipper_liability_text retired into template text blocks (Phase 7 Task 14),
-    // so no textarea keys remain on the settings page; a stray string key falls through to text.
+    // cert_statement / shipper_liability_text retired into template text blocks (Phase 7 Task 14);
+    // a stray string key falls through to text.
     expect(widgetKindFor("cert_statement", "some long legal text")).toBe("text");
     expect(widgetKindFor("shipper_liability_text", "some long legal text")).toBe("text");
+  });
+
+  it("renders a textarea for the multi-line company address (#213)", () => {
+    // company_address is multi-line by design — the seed stores a \n and the traveler prints it
+    // as letterhead line breaks — so a single-line input swallows the break and a save from that
+    // input writes the mangled value back onto every printed document.
+    expect(widgetKindFor("company_address", "1450 Furnace Road\nCleveland, OH 44101")).toBe("textarea");
   });
 
   it("renders a number input for a numeric setting", () => {

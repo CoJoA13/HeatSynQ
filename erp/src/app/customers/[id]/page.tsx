@@ -180,17 +180,31 @@ function CustomerDetail({ id }: { id: string }) {
   // #75: applying a credit memo CREATES an Application, so it takes `receivables.create` —
   // the same gate the route enforces, so the control is disabled-with-a-reason (§5.16)
   // rather than offered and then refused.
-  const receivablesApplyGate = gate(perms, "receivables.create");
+  // #211 (owner ruling, 2026-08-25): applying a CREDIT moves value between open items the way a
+  // cash application does, so it takes the `apply_payments` named action on top of
+  // `receivables.create` — matching POST /api/receivables/credit-applications, the route this
+  // gate's controls call. The BatchDetail applyGateRaw shape, whichever-is-actually-the-blocker
+  // title (§5.16). The write-off composition below deliberately does NOT build on this gate:
+  // its route (POST /api/receivables/write-offs) requires create + write_off and no
+  // apply_payments, and the UI gate must match the route it calls (the BatchDetail owner
+  // ruling) — over-gating here would disable a control the server would accept.
+  const receivablesCreateGate = gate(perms, "receivables.create");
+  const applyActionGate = gateDo(perms, "apply_payments");
+  const receivablesApplyBlocked = receivablesCreateGate.disabled || applyActionGate.disabled;
+  const receivablesApplyGate: Gate = {
+    allowed: !receivablesApplyBlocked, disabled: receivablesApplyBlocked,
+    title: receivablesCreateGate.disabled ? receivablesCreateGate.title : applyActionGate.title,
+  };
   // #77: a standalone write-off needs `receivables.create` AND the `write_off` special action — the
   // exact pair `POST /api/receivables/write-offs` enforces. Combined into ONE gate here (the
   // `BatchDetail` precedent) so the control renders visible-and-disabled naming whichever half is
   // actually blocking; "Requires receivables.create" and "Requires write_off" send an operator to
   // different conversations.
   const writeOffSpecialGate = gateDo(perms, "write_off");
-  const writeOffBlocked = receivablesApplyGate.disabled || writeOffSpecialGate.disabled;
+  const writeOffBlocked = receivablesCreateGate.disabled || writeOffSpecialGate.disabled;
   const receivablesWriteOffGate: Gate = {
     allowed: !writeOffBlocked, disabled: writeOffBlocked,
-    title: receivablesApplyGate.disabled ? receivablesApplyGate.title : writeOffSpecialGate.title,
+    title: receivablesCreateGate.disabled ? receivablesCreateGate.title : writeOffSpecialGate.title,
   };
   // Voiding a write-off is a delete of the Application row — `receivables.delete`, what
   // `DELETE /api/receivables/applications/[id]` enforces.
