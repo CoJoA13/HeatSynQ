@@ -56,11 +56,11 @@ export default function SettingsPage() {
                 <span>{r.label}{saved === r.key && <em className="ml-2 text-green-700">saved</em>}</span>
               );
 
-              // Long, multi-paragraph legal text — stacked layout, full-width textarea; a
-              // single-line input makes such a setting uneditable. Currently dormant:
-              // `TEXTAREA_KEYS` is empty since Phase 7 Task 14 (the cert/shipper/quote standing
-              // texts retired into template text blocks — see settings-ui.ts). The branch stays
-              // for any future long-text setting.
+              // Multi-line text — stacked layout, full-width textarea. A single-line input
+              // swallows the line breaks AND writes the mangled value back on blur-save (#213).
+              // Serves company_address (printed as the multi-line letterhead) since 2026-08-25;
+              // the long standing-text settings it was built for retired into template text
+              // blocks in Phase 7 Task 14 (see settings-ui.ts).
               if (kind === "textarea") {
                 return (
                   <div key={r.key} className="border-b p-2 text-sm last:border-0">

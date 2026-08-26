@@ -27,11 +27,13 @@ const SELECT_LABELS: Record<string, Record<string, string>> = {
   cert_scope_default: CERT_SCOPE_LABELS,
 };
 
-/** Keys whose stored text is long, multi-paragraph legal boilerplate — a single-line `<input>`
- *  makes them uneditable in practice. EMPTY since Phase 7 Task 14: the two long standing-text
- *  settings (cert_statement / shipper_liability_text) retired into template text blocks, edited in
- *  the template designer, not this page. The mechanism stays for any future long-text setting. */
-const TEXTAREA_KEYS = new Set<string>();
+/** Keys whose stored text is multi-line — a single-line `<input>` doesn't just make them hard to
+ *  edit, it swallows the line breaks and a blur-save writes the mangled value BACK (#213). The
+ *  long standing-text settings (cert_statement / shipper_liability_text) retired into template
+ *  text blocks in Phase 7 Task 14; company_address joined 2026-08-25: the seed stores it with a
+ *  `\n` and the traveler prints that break as the letterhead, so collapsing it corrupts the
+ *  address on every printed document. */
+const TEXTAREA_KEYS = new Set<string>(["company_address"]);
 
 /**
  * Picks the control a setting renders as. `value` is the setting's CURRENT value, exactly as
