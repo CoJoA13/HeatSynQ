@@ -26,8 +26,23 @@ const MIGRATION_PATH = join(
 );
 const SQL = readFileSync(MIGRATION_PATH, "utf8");
 
+// The role-only rule above misses ONE preserved-ability case (Codex P1 on PR #240): a live user
+// whose `receivables.create` arrives as a UserPermissionOverride GRANT rather than through their
+// role. The first migration was already applied to both databases, and an applied migration.sql
+// is never edited in place (.claude/hooks/protect-applied-migrations.sh, the P3009 lesson) — so
+// the override half is a SECOND migration, the manage_backups two-migration precedent.
+const OVERRIDE_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma/migrations/20260825224500_grant_apply_payments_to_override_holders/migration.sql",
+);
+const OVERRIDE_SQL = readFileSync(OVERRIDE_MIGRATION_PATH, "utf8");
+
 async function runMigration(): Promise<void> {
   await prisma.$executeRawUnsafe(SQL);
+}
+
+async function runOverrideMigration(): Promise<void> {
+  await prisma.$executeRawUnsafe(OVERRIDE_SQL);
 }
 
 async function roleWithPermissions(name: string, permissions: string[], deletedAt?: Date) {
@@ -76,5 +91,62 @@ describe("apply_payments backfill migration (#211)", () => {
     expect(await prisma.rolePermission.count({
       where: { roleId: role.id, permission: "action.apply_payments" },
     })).toBe(1);
+  });
+});
+
+async function userWithOverrides(
+  username: string,
+  overrides: Array<{ permission: string; mode: "GRANT" | "DENY" }>,
+  deletedAt?: Date,
+) {
+  const role = await roleWithPermissions(`role-${username}`, ["receivables.view"]);
+  return prisma.user.create({
+    data: {
+      username, displayName: username, passwordHash: "x", roleId: role.id,
+      ...(deletedAt ? { deletedAt } : {}),
+      overrides: { create: overrides },
+    },
+  });
+}
+
+async function overrideModeFor(userId: string): Promise<string | null> {
+  const row = await prisma.userPermissionOverride.findUnique({
+    where: { userId_permission: { userId, permission: "action.apply_payments" } },
+  });
+  return row?.mode ?? null;
+}
+
+describe("apply_payments override-holder backfill migration (#211, Codex P1 on PR #240)", () => {
+  it("grants a GRANT override to a live user whose receivables.create is itself an override GRANT", async () => {
+    const u = await userWithOverrides("ov-holder", [{ permission: "receivables.create", mode: "GRANT" }]);
+    await runOverrideMigration();
+    expect(await overrideModeFor(u.id)).toBe("GRANT");
+  });
+
+  it("preserves an explicit DENY override on action.apply_payments", async () => {
+    const u = await userWithOverrides("ov-denied", [
+      { permission: "receivables.create", mode: "GRANT" },
+      { permission: "action.apply_payments", mode: "DENY" },
+    ]);
+    await runOverrideMigration();
+    expect(await overrideModeFor(u.id)).toBe("DENY");
+  });
+
+  it("grants nothing to a soft-deleted user or to a DENY on receivables.create", async () => {
+    const dead = await userWithOverrides("ov-dead", [{ permission: "receivables.create", mode: "GRANT" }], new Date());
+    const denied = await userWithOverrides("ov-create-denied", [{ permission: "receivables.create", mode: "DENY" }]);
+    await runOverrideMigration();
+    expect(await overrideModeFor(dead.id)).toBeNull();
+    expect(await overrideModeFor(denied.id)).toBeNull();
+  });
+
+  it("is idempotent: re-running never duplicates or rewrites an override", async () => {
+    const u = await userWithOverrides("ov-idem", [{ permission: "receivables.create", mode: "GRANT" }]);
+    await runOverrideMigration();
+    await runOverrideMigration();
+    expect(await prisma.userPermissionOverride.count({
+      where: { userId: u.id, permission: "action.apply_payments" },
+    })).toBe(1);
+    expect(await overrideModeFor(u.id)).toBe("GRANT");
   });
 });
