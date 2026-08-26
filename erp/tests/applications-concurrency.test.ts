@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { applyPayment } from "@/server/applications";
+import { applyPayment, familyCustomerIds } from "@/server/applications";
 import { parseDateOnly } from "@/lib/business-days";
 
 // Phase 5B's FIRST concurrency test (task brief Step 12). Two applications race on ONE finalized
@@ -132,5 +132,33 @@ describe("applyPayment concurrency — the invoice-row claim serializes two appl
     const live = await prisma.application.findMany({ where: { invoiceId, deletedAt: null } });
     expect(live).toHaveLength(1); // only the holder's 700 — the competitor wrote nothing
     expect(live.reduce((s, a) => s + a.amount.toNumber(), 0)).toBe(700);
+  });
+});
+
+describe("familyCustomerIds runs on the caller's transaction (#215, the #60 class)", () => {
+  // applyPaymentInTx and applyCreditInTx call familyCustomerIds from INSIDE their open
+  // Serializable transactions. On the top-level prisma singleton that read executes on a SECOND
+  // connection — outside the transaction's snapshot AND outside its SSI read-set (a concurrent
+  // family edit is invisible: no 40001, no retry), while holding the transaction's pooled
+  // connection to acquire another (the P2024 starvation shape close-periods.ts fixed). The
+  // deterministic pin, per CLAUDE.md's #60 rule: a row written inside the caller's transaction
+  // is visible to the read only if the read genuinely runs on that transaction.
+  it("sees a family row written inside the caller's open transaction", async () => {
+    const parent = await prisma.customer.create({ data: { code: "FAMP", name: "Family Parent" } });
+    const inTx = await prisma.$transaction(async (tx) => {
+      const child = await tx.customer.create({
+        data: { code: "FAMC", name: "Family Child", parentId: parent.id },
+      });
+      return { childId: child.id, family: await familyCustomerIds(parent.id, tx) };
+    });
+    expect(inTx.family).toContain(inTx.childId);
+  });
+
+  it("keeps answering on the singleton for the un-transactional callers", async () => {
+    const parent = await prisma.customer.create({ data: { code: "FAMQ", name: "Family Q" } });
+    const child = await prisma.customer.create({
+      data: { code: "FAMR", name: "Family R", parentId: parent.id },
+    });
+    expect(await familyCustomerIds(parent.id)).toEqual(expect.arrayContaining([parent.id, child.id]));
   });
 });
