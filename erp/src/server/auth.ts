@@ -20,7 +20,10 @@ const DUMMY_HASH = await hashPassword("timing-equalizer");
 export async function authenticateUser(
   username: string,
   password: string,
-): Promise<{ id: string; displayName: string } | null> {
+  // `verifiedPasswordHash` is the hash this call verified `password` against — the proof
+  // createSession's fence (sessions.ts) requires so a session can never be minted under a
+  // credential a concurrent reset has already replaced. Server-internal; never serialized.
+): Promise<{ id: string; displayName: string; verifiedPasswordHash: string } | null> {
   // select: only what this function actually reads below — every login attempt runs this query,
   // and the bare findUnique used to pull the full row, signature bytes included, just to check a
   // password and return an id/displayName pair.
@@ -31,5 +34,9 @@ export async function authenticateUser(
   const eligibleUser = user && user.active && !user.deletedAt ? user : null;
   const passwordOk = await verifyPassword(eligibleUser?.passwordHash ?? DUMMY_HASH, password);
   if (!eligibleUser || !passwordOk) return null;
-  return { id: eligibleUser.id, displayName: eligibleUser.displayName };
+  return {
+    id: eligibleUser.id,
+    displayName: eligibleUser.displayName,
+    verifiedPasswordHash: eligibleUser.passwordHash,
+  };
 }

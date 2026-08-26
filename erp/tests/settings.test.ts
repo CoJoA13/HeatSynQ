@@ -147,7 +147,7 @@ describe("settings", () => {
     });
     await setSetting("session_timeout_minutes", 5);
     const now = Date.now();
-    const { expiresAt } = await createSession(user.id);
+    const { expiresAt } = (await createSession(user.id, "x"))!;
     const diffMs = expiresAt.getTime() - now;
     const diffMins = diffMs / 60_000;
     expect(diffMins).toBeGreaterThanOrEqual(4);

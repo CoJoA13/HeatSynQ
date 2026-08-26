@@ -10,12 +10,14 @@ describe("request context", () => {
     const cookie = await signInWith(["admin.view"]);
     // Not vi.spyOn: Prisma 6.19's client Proxy reports a bogus
     // `{ value: undefined }` own-property descriptor for model methods, so tinyspy's
-    // spyOn(prisma.session, "update").mockRestore() writes that `undefined` back over the
-    // live method, permanently breaking every later prisma.session.update call in the
-    // suite. A manual wrap/restore of the bound method sidesteps the descriptor entirely.
-    const originalUpdate = prisma.session.update.bind(prisma.session);
-    const spy = vi.fn(originalUpdate);
-    prisma.session.update = spy as unknown as typeof prisma.session.update;
+    // spyOn(...).mockRestore() writes that `undefined` back over the live method, permanently
+    // breaking every later call in the suite. A manual wrap/restore of the bound method
+    // sidesteps the descriptor entirely. `updateMany` since PR #242: the sliding-expiry write
+    // moved off `update` so a session row deleted mid-request answers null instead of a
+    // thrown P2025 (#218 review P2) — this counter follows the write it counts.
+    const originalUpdateMany = prisma.session.updateMany.bind(prisma.session);
+    const spy = vi.fn(originalUpdateMany);
+    prisma.session.updateMany = spy as unknown as typeof prisma.session.updateMany;
     try {
       const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }),
                            { params: Promise.resolve({}) });
@@ -23,7 +25,7 @@ describe("request context", () => {
       // One sliding-expiry write, not two.
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
-      prisma.session.update = originalUpdate;
+      prisma.session.updateMany = originalUpdateMany;
     }
   });
 
