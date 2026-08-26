@@ -85,6 +85,26 @@ files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally AND in CI, **54 mig
 CLAUDE.md's environment notes, README) are STALE for this machine — the rewrite is **#235**,
 `ready-for-agent`, and until it lands read §8's Fedora commands as historical.
 
+**2026-08-26 — the session-security pair MERGED (`d0e1437`, PR #242, squash), closing #217 and
+#218.** The login cookie drops its fixed `Expires` (the browser deleted it
+`session_timeout_minutes` after LOGIN regardless of activity while `getSessionUser` slid the DB
+row — active users logged out mid-shift; now a browser-session cookie, the server-side sliding
+expiry the only clock, the cookie shape pinned), and a password change or deactivation deletes
+the target's `Session` rows inside the same transaction as the update. **Two Codex rounds, four
+findings, all accepted and fixed on-branch — the review loop earned its keep again**: round 1
+found the login-vs-reset TOCTOU (a login that verified the old password could mint its session
+AFTER the reset's sweep ran — an FK insert takes only KEY SHARE, reproduced by a held-lock test)
+and the sliding-expiry `update` throwing P2025→500 on a row deleted mid-request (now
+`updateMany`, zero rows = logged out). The fix is `createSession`'s FENCE: it requires the hash
+the caller verified and re-reads the User row **`FOR SHARE`** in the same transaction as the
+insert — FOR SHARE conflicts with the `FOR NO KEY UPDATE` claim every `auditedUpdate` takes, so
+login and credential-mutation serialize both ways. Round 2 widened the fence to ELIGIBILITY
+(deactivation leaves the hash untouched; a hash-only fence minted a session that reactivation
+would RESURRECT without a new login) and made the race tests deterministic (a `swept` signal
+resolved after the sweep executes under the lock, awaited before the attempt — a wall-clock
+sleep cannot establish that ordering). Round 3 clean. Gates: **3709 tests / 215 files**,
+`tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI.
+
 **Fix MERGED to `main` as `a5aac43` (PR #114, squash, 2026-08-16) — `allocateNumber`'s counter-row
 seed is now atomic.** Standing up the
 build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
