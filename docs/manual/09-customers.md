@@ -41,8 +41,8 @@ The commercial terms of the account. Six tick boxes — **Credit hold**, **Taxab
 | **Parent** | Makes this customer a division of another (below) |
 | **Default PO** | Filled in for them at order entry |
 | **Credit limit** | Recorded on the account |
-| **Finance charge rate** | Their own monthly rate for the statement's finance-charge line; blank uses the plant default |
-| **Sales tax rate** | Their own rate; *"Blank uses the plant default."* Only ever used if **Taxable** is ticked |
+| **Finance charge (monthly %)** | Their own monthly rate for the statement's finance-charge line, as a percent — 1.5 means 1.5% per month; blank uses the plant default |
+| **Sales tax rate (%)** | Their own rate, entered as a percent — 7 means 7%; *"Blank uses the plant default."* Only ever used if **Taxable** is ticked |
 | **Request days override** | Their own lead time in days; blank uses the plant default |
 | **Certification required default** | Yes / No / inherit |
 | **Certification scope default** | By order / By load / By shipment, or inherit |

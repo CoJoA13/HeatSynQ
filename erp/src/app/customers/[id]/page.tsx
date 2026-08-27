@@ -6,6 +6,7 @@ import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
+import { percentFromFraction, fractionFromPercent } from "@/lib/rate-display";
 import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useSaveScope } from "@/lib/save-scope";
@@ -159,7 +160,11 @@ function CustomerDetail({ id }: { id: string }) {
     // updater closed over it (use-edit-guard.ts, the round-3 fixpoint) — React defers the
     // 2nd/3rd updaters here past this whole function, so nothing an updater needs may live in
     // guard state it reads at run time.
-    setC(editGuard.applyPayload(cust));
+    // #227: `salesTaxRate` is stored as a fraction but displayed as percent — convert BEFORE the
+    // guard captures/applies, so the edit guard compares like with like (`financeChargeRate` is
+    // already a percent number in storage; it passes through untouched).
+    const shown: Customer = { ...cust, salesTaxRate: percentFromFraction(cust.salesTaxRate) };
+    setC(editGuard.applyPayload(shown));
     setAddresses(editGuard.applyRows("addresses", addr));
     setContacts(editGuard.applyRows("contacts", cont));
   }, [editGuard]);
@@ -293,8 +298,12 @@ function CustomerDetail({ id }: { id: string }) {
   // nothing downstream of them reloads again). Returning a boolean here, once, closes the door
   // on every future caller making the same mistake — a caller that wants to reload after success
   // can simply check the return value first, and there is no second reload path left to forget.
-  async function save(body: Partial<Customer>): Promise<boolean> {
-    setC((cur) => (cur ? { ...cur, ...body } : cur));
+  // `display` (#227): a field whose WIRE value differs from its shown text — the percent-typed
+  // salesTaxRate sends the fraction — passes the shown text here, or the optimistic set below
+  // would flash the wire convention into the input (the PUT echoes {ok:true}, so nothing lands
+  // later to correct it).
+  async function save(body: Partial<Customer>, display?: Partial<Customer>): Promise<boolean> {
+    setC((cur) => (cur ? { ...cur, ...body, ...display } : cur));
     const key = Object.keys(body).sort().join(",");
     const settled = serial(key, async () => {
       try {
@@ -657,21 +666,25 @@ function CustomerDetail({ id }: { id: string }) {
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
-            Finance charge rate
-            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocusC("financeChargeRate")} readOnly={!canEdit.allowed}
+            Finance charge (monthly %)
+            <input value={c.financeChargeRate ?? ""} inputMode="decimal" placeholder="1.5000" onFocus={noteFocusC("financeChargeRate")} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
-            {/* Overrides BillingConfig.salesTaxRate (P5A §4.4) — a raw decimal, not a percent
-                display, matching the plant setting it overrides (admin/billing/page.tsx's own
-                "0.0400" placeholder convention). Blank inherits the plant rate. */}
-            Sales tax rate
-            <input value={c.salesTaxRate ?? ""} inputMode="decimal" placeholder="0.0400"
+            {/* Overrides BillingConfig.salesTaxRate (P5A §4.4). Shown and typed as a PERCENT
+                (#227), matching admin/billing/page.tsx; the STORED value stays the fraction, so
+                the blur converts for the wire and passes the typed text as save()'s display
+                override. Blank inherits the plant rate. */}
+            Sales tax rate (%)
+            <input value={c.salesTaxRate ?? ""} inputMode="decimal" placeholder="4.00"
                    onFocus={noteFocusC("salesTaxRate")} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, salesTaxRate: e.target.value })}
-                   onBlur={(e) => onBlurSave(e, {}, (v) => void save({ salesTaxRate: v === "" ? null : v }))}
+                   onBlur={(e) => onBlurSave(e, {}, (v) => void save(
+                     { salesTaxRate: v === "" ? null : fractionFromPercent(v) },
+                     { salesTaxRate: v === "" ? null : v },
+                   ))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
             <span className="ml-2 text-xs text-slate-500">Blank uses the plant default.</span>
           </label>

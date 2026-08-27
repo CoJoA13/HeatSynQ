@@ -151,7 +151,9 @@ async function run(): Promise<void> {
     certChargeStepCodeId: scCert,
     certChargeDefault: "35.00",
     billForCertDefault: true,
-    financeChargeRate: "0.0150",
+    // #227: a PERCENT number (1.5 = 1.5%/month), NOT the fraction convention salesTaxRate uses
+    // above — finance-charges.ts divides this by 100. "0.0150" here was a 0.015%/month charge.
+    financeChargeRate: "1.5000",
     discountGlAccountId: glDiscount,
     writeOffGlAccountId: glWriteOff,
   });

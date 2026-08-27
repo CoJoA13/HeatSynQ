@@ -4,6 +4,7 @@ import { api } from "@/lib/fetcher";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
 import { gate } from "@/lib/permission-ui";
+import { percentFromFraction, fractionFromPercent } from "@/lib/rate-display";
 
 // number|null once loaded from the server, but also string mid-edit for the two decimal fields —
 // the input is bound straight to these and the server's decimalField schema accepts a decimal
@@ -25,6 +26,13 @@ type Cfg = {
   writeOffGlAccountId: string | null;
 };
 type GlAccount = { id: string; name: string; description?: string | null };
+
+// #227: the page displays PERCENT everywhere, but `salesTaxRate` is STORED as a fraction
+// (0.07 = 7% — pricing.ts multiplies directly) while `financeChargeRate` is stored as the
+// percent number itself (finance-charges.ts divides by 100). State holds the displayed text, so
+// the one fraction field converts at every server→state landing through this map and back to the
+// fraction in `blurDecimal` before the wire — the API and the database never change convention.
+const displayCfg = (c: Cfg): Cfg => ({ ...c, salesTaxRate: percentFromFraction(c.salesTaxRate) });
 type StepCodeOption = { id: string; name: string; active: boolean };
 
 export default function BillingPage() {
@@ -46,7 +54,7 @@ export default function BillingPage() {
     api<Cfg>("/api/admin/billing"),
     api<GlAccount[]>("/api/admin/reference/glAccount"),
     api<StepCodeOption[]>("/api/picklists/processStepCode"),
-  ]).then(([c, gl, sc]) => { setCfg(c); setGlAccounts(gl); setStepCodes(sc); });
+  ]).then(([c, gl, sc]) => { setCfg(displayCfg(c)); setGlAccounts(gl); setStepCodes(sc); });
 
   useEffect(() => { load().catch((e) => setError(e.message)); }, []);
 
@@ -58,7 +66,7 @@ export default function BillingPage() {
       // step — fired the instant the PUT resolves (the #124/#131 ordering; no follow-up load on
       // this success path, the response body is the fresh truth).
       invalidateSetupBanner();
-      setCfg(updated); setError(null);
+      setCfg(displayCfg(updated)); setError(null);
       setSaved(field); setTimeout(() => setSaved(null), 1500);
     } catch (e) {
       void load().catch(() => {}); // roll back to server truth first, then report why (§5.13)
@@ -72,7 +80,9 @@ export default function BillingPage() {
   function noteFocus(key: string, value: string) { focused.current[key] = value; }
   function blurDecimal(key: "salesTaxRate" | "certChargeDefault" | "financeChargeRate", value: string) {
     if (value === focused.current[key]) return;
-    void save({ [key]: value === "" ? null : value } as Partial<Cfg>);
+    // Only salesTaxRate converts (#227) — the displayed percent becomes the stored fraction.
+    const wire = key === "salesTaxRate" ? fractionFromPercent(value) : value;
+    void save({ [key]: wire === "" ? null : wire } as Partial<Cfg>);
   }
 
   if (!cfg) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
@@ -87,11 +97,11 @@ export default function BillingPage() {
       )}
       <div className="rounded border bg-white">
         <label className="flex items-center justify-between border-b p-2 text-sm">
-          <span>Sales tax rate{savedMark("salesTaxRate")}</span>
+          <span>Sales tax rate (%){savedMark("salesTaxRate")}</span>
           <input
             value={cfg.salesTaxRate ?? ""}
             inputMode="decimal"
-            placeholder="0.0400"
+            placeholder="4.00"
             disabled={canEdit.disabled}
             title={canEdit.title}
             onFocus={(e) => noteFocus("salesTaxRate", e.target.value)}
