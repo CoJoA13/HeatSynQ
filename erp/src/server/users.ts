@@ -137,7 +137,6 @@ export async function updateUser(
 }
 
 export async function setUserOverrides(id: string, overrides: { permission: string; mode: "GRANT" | "DENY" }[]) {
-  assertKnownPermissions(overrides);
   await writeUser(id, undefined, overrides);
 }
 
@@ -155,7 +154,6 @@ export async function updateUserWithOverrides(
   input: Parameters<typeof updateUser>[1] | undefined,
   overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
 ) {
-  if (overrides) assertKnownPermissions(overrides);
   if (input && Object.keys(input).length) {
     await updateUser(id, input, overrides); // runs updateUser's own guards, then the shared writer
   } else if (overrides) {
@@ -168,12 +166,15 @@ function assertKnownPermissions(overrides: { permission: string }[]) {
   if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.map((o) => o.permission).join(", ")}`);
 }
 
-/** ONE transaction, ONE auditedUpdate, applying whichever parts are present (#237). */
+/** ONE transaction, ONE auditedUpdate, applying whichever parts are present (#237). The
+ *  unknown-permission refusal lives HERE — first act, still pre-transaction — so every path to
+ *  the write validates by construction rather than by caller discipline (review Minor 1). */
 async function writeUser(
   id: string,
   input: Parameters<typeof updateUser>[1] | undefined,
   overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
 ) {
+  if (overrides) assertKnownPermissions(overrides);
   await withDbErrors({ entity: "User" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("user", id, async () => {

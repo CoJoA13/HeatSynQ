@@ -38,6 +38,15 @@ describe("PUT /api/admin/users/[id] atomicity (#237)", () => {
     expect((await readAudit("user", id)).map((l) => l.action)).toEqual(["create"]);
   });
 
+  it("403 for a caller without manage_users, and nothing commits", async () => {
+    const cookie = await signInWith(["admin.view", "admin.edit"], "not-mgr"); // area perms are not the special action
+    const { id } = await createUser({ username: "sam", displayName: "Same", password: "pw123456" });
+    const res = await PUT(putReq(cookie, { displayName: "Changed" }), ctx(id));
+    expect(res.status).toBe(403);
+    const row = await prisma.user.findUniqueOrThrow({ where: { id } });
+    expect(row.displayName).toBe("Same");
+  });
+
   it("a body carrying BOTH fields and overrides lands as ONE audit entry showing both", async () => {
     const cookie = await signInWith(["action.manage_users"], "mgr2");
     const { id } = await createUser({ username: "bob", displayName: "B", password: "pw123456" });
