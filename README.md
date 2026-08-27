@@ -4,7 +4,7 @@ A self-hosted web ERP for a commercial heat-treating shop — built to run in pa
 
 **Status:** Phase 1 (Foundation), Phase 2A (reference data) and Phase 2B (customers) complete and merged to `main` — login, owner-configurable roles & permissions, full audit trail, typed settings, admin pages, app shell, Docker packaging with fail-loud nightly backups, GL accounts/materials/inspection/process step codes and other reference data, and customers with addresses and contacts. 258 integration tests. The Prisma 7 upgrade is in progress on a branch; Phase 2C (parts) is next.
 
-> **Continuing this project on a new machine or in a fresh session? Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — it is the portable project memory: decisions, conventions, backlog, Fedora setup, and the Phase 2 kickoff prompt.
+> **Continuing this project on a new machine or in a fresh session? Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — it is the portable project memory: decisions, conventions, backlog, Fedora setup (§8), and the §9 kickoff for the next piece of work.
 
 ## Repository layout
 
