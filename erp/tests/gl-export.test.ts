@@ -181,8 +181,9 @@ async function makeFinalizedInvoiceWithDates(
 /** A finalized CREDIT memo with one revenue line — mirrors `makeFinalizedInvoiceDated`'s shape but
  *  `kind: "CREDIT"`, its own `creditNumber` (`Invoice.creditNumber` is plain @unique, sweep-exempt —
  *  CLAUDE.md), and its money sign flipped (`createCredit`'s own convention: a CREDIT's `total`/line
- *  `amount` are stored negative). `gl-export.ts` and `close-periods.ts` both `Math.abs()` the total
- *  before use, so the sign itself is cosmetic here — it is kept negative only to match production. */
+ *  `amount` are stored negative). Since #216 that sign is LOAD-BEARING for the export: the journal
+ *  reads amounts signed and the negative is what reverses the entry (CR A/R, DR revenue) —
+ *  `close-periods.ts` alone still `Math.abs()`es the total for its kind-split month figures. */
 async function makeFinalizedCreditDated(gl: Gl, dateStr: string, total: number): Promise<InvoiceRef> {
   seq += 1;
   const customer = await prisma.customer.create({ data: { code: `GLR${seq}`, name: `GL Credit ${seq}` } });
@@ -735,5 +736,96 @@ describe("gl-export readiness", () => {
     const debit = out.postings.reduce((s, p) => s + p.debit, 0);
     const credit = out.postings.reduce((s, p) => s + p.credit, 0);
     expect(Math.round(debit * 100)).toBe(Math.round(credit * 100)); // the backstop's invariant holds
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #216: a finalized invoice carrying a NEGATIVE line beside positive ones. Reachable end-to-end
+// (the grid's amount field has no minimum), and under the old per-line Math.abs it unbalanced
+// the batch — |100| + |−20| credited while A/R debited the netted |80| — so the export 500'd on
+// the Σdebit backstop while `resolveReadiness` reported ZERO gaps. Signed line sums fix it: the
+// negative line posts as a contra debit (its own account) or nets inside its account's sum.
+// -------------------------------------------------------------------------------------------
+
+/** A finalized INVOICE whose lines carry explicit signed amounts and accounts; `total` is their sum. */
+async function makeFinalizedSignedLines(
+  dateStr: string, entries: { amount: number; glAccountId: string; glAccountName: string }[],
+): Promise<InvoiceRef> {
+  seq += 1;
+  const total = entries.reduce((s, e) => s + e.amount, 0);
+  const customer = await prisma.customer.create({ data: { code: `GLS${seq}`, name: `GL Signed ${seq}` } });
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 750000 + seq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly(dateStr), requestDate: parseDateOnly(dateStr),
+    },
+  });
+  const invoice = await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly(dateStr), dueDate: parseDateOnly(dateStr),
+      total, subtotal: total, finalizedAt: parseDateOnly(dateStr),
+      lines: {
+        create: entries.map((e, i) => ({
+          position: i + 1, kind: "CHARGE" as const, glAccountId: e.glAccountId,
+          glAccountName: e.glAccountName, description: `Line ${i + 1}`, amount: e.amount,
+        })),
+      },
+    },
+  });
+  return { invoiceId: invoice.id, customerId: customer.id };
+}
+
+describe("mixed-sign invoices (#216)", () => {
+  it("a negative adjustment line on its own account exports as a contra debit, balanced", async () => {
+    const gl = await seedGlDefaults();
+    const adj = await prisma.glAccount.create({ data: { name: "4090-ADJ" } });
+    await prisma.billingConfig.update({
+      where: { id: "singleton" }, data: { otherChargeGlAccountId: gl.revId },
+    });
+    await makeFinalizedSignedLines("2026-07-05", [
+      { amount: 100, glAccountId: gl.revId, glAccountName: "4010-REV" },
+      { amount: -20, glAccountId: adj.id, glAccountName: "4090-ADJ" },
+    ]);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    // Readiness is genuinely clean (every line HAS an account) — the export must succeed, not 500.
+    expect(await readinessForExport(new Date(Date.UTC(2026, 7, 0)))).toEqual([]);
+    const out = await asSystem(() => exportClose(period.id));
+    const debit = out.postings.reduce((s, p) => s + p.debit, 0);
+    const credit = out.postings.reduce((s, p) => s + p.credit, 0);
+    expect(Math.round(debit * 100)).toBe(Math.round(credit * 100));
+
+    const arPosting = out.postings.find((p) => p.glAccountId === gl.arId)!;
+    expect(arPosting.debit).toBe(80); // the netted total, unchanged
+    const adjPosting = out.postings.find((p) => p.glAccountId === adj.id)!;
+    expect(adjPosting.debit).toBe(20); // the contra side, not a 20 credit
+    expect(adjPosting.credit).toBe(0);
+    for (const p of out.postings) {
+      expect(p.debit).toBeGreaterThanOrEqual(0);
+      expect(p.credit).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("a negative line on the SAME account nets inside that account's single credit", async () => {
+    const gl = await seedGlDefaults();
+    await prisma.billingConfig.update({
+      where: { id: "singleton" }, data: { otherChargeGlAccountId: gl.revId },
+    });
+    await makeFinalizedSignedLines("2026-07-05", [
+      { amount: 100, glAccountId: gl.revId, glAccountName: "4010-REV" },
+      { amount: -20, glAccountId: gl.revId, glAccountName: "4010-REV" },
+    ]);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const out = await asSystem(() => exportClose(period.id));
+    const debit = out.postings.reduce((s, p) => s + p.debit, 0);
+    const credit = out.postings.reduce((s, p) => s + p.credit, 0);
+    expect(Math.round(debit * 100)).toBe(Math.round(credit * 100));
+    const revPostings = out.postings.filter((p) => p.glAccountId === gl.revId);
+    expect(revPostings).toHaveLength(1);
+    expect(revPostings[0].credit).toBe(80); // netted per account before the journal is built
   });
 });

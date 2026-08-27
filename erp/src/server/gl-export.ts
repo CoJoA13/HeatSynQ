@@ -339,8 +339,11 @@ function aggregateLines(lines: JournalLine[]): JournalLine[] {
  * Revenue comes from the
  * invoice's own line snapshots grouped by `glAccountId` (TAX lines excluded — the tax line's account
  * is the plant default, matching the readiness gate); A/R, tax, discount, write-off and cash accounts
- * come from the plant config / payment type. Amounts are magnitudes — the INVOICE/CREDIT `kind` and
- * the mapper's `reverse` flag decide the debit/credit direction, never the stored money sign.
+ * come from the plant config / payment type. Sales amounts pass through SIGNED, exactly as stored
+ * (#216) — `salesJournal` places each by its own sign, so a CREDIT's stored-negative money reverses
+ * the entry and a mixed-sign invoice posts contra lines instead of unbalancing. Payment/application
+ * amounts stay magnitudes: their services refuse a non-positive amount at entry, so `Math.abs`
+ * there is inert normalization, not direction logic.
  */
 async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<string, JournalLine[]>> {
   const { monthStart, monthEnd, nextStart } = bounds;
@@ -366,7 +369,7 @@ async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<str
   });
   for (const inv of invoices) {
     // Group the non-TAX lines by their snapshot glAccountId; sum magnitudes.
-    const byAccount = new Map<string, { glAccountName: string; amount: number }>();
+    const byAccount = new Map<string, { glAccountName: string; amountCents: number }>();
     for (const l of inv.lines) {
       if (l.kind === "TAX") continue; // the tax credit comes from config below, not the TAX line
       if (l.glAccountId === null) {
@@ -379,21 +382,25 @@ async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<str
           "GL export: an in-scope invoice line has no GL account — readiness should have refused this export");
       }
       const prev = byAccount.get(l.glAccountId);
-      const amt = Math.abs(l.amount.toNumber());
-      if (prev) prev.amount += amt;
-      else byAccount.set(l.glAccountId, { glAccountName: l.glAccountName, amount: amt });
+      // SIGNED, in integer cents (#216): a negative adjustment line nets against its account's
+      // other lines here, and a residual negative sum reaches `salesJournal` intact — its signed
+      // placement posts the contra side. The old `Math.abs` credited the gross while A/R debited
+      // the netted total, an unbalanced batch the backstop 500'd on with a clean readiness list.
+      const amtCents = cents(l.amount.toNumber());
+      if (prev) prev.amountCents += amtCents;
+      else byAccount.set(l.glAccountId, { glAccountName: l.glAccountName, amountCents: amtCents });
     }
     const lines = salesJournal({
       kind: inv.kind,
       invoiceId: inv.id,
-      total: Math.abs(inv.total.toNumber()),
+      total: inv.total.toNumber(),
       arGlAccountId: config.arGlAccountId ?? "",
       arGlAccountName: arName,
-      taxTotal: Math.abs(inv.taxTotal.toNumber()),
+      taxTotal: inv.taxTotal.toNumber(),
       taxGlAccountId: config.salesTaxGlAccountId,
       taxGlAccountName: config.salesTaxGlAccountId ? (nameById.get(config.salesTaxGlAccountId) ?? "") : "",
       revenue: [...byAccount.entries()].map(([glAccountId, v]) => ({
-        glAccountId, glAccountName: v.glAccountName, amount: v.amount,
+        glAccountId, glAccountName: v.glAccountName, amount: v.amountCents / 100,
       })),
     });
     const nz = nonZero(lines);

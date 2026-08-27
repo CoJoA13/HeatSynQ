@@ -12,6 +12,9 @@ export type JournalLine = {
   isReversal: boolean;
 };
 
+// Amounts are SIGNED, exactly as stored on the invoice row (#216): an INVOICE normally positive,
+// a CREDIT stored negative by `createCredit`, and a mixed-sign line set passed through as-is —
+// `salesJournal` places each amount by its own sign, never by `kind`.
 export type SalesEvent = {
   kind: "INVOICE" | "CREDIT";
   invoiceId: string;
@@ -39,23 +42,35 @@ export type CashEvent = {
 
 const c = (n: number) => Math.round(n * 100);
 
-/** Sales side (§5): DR A/R = CR revenue + tax for an INVOICE; the mirror for a CREDIT. All lines
- *  carry this event's invoice id and isReversal:false (a new posting). */
+/** Sales side (§5): DR A/R = CR revenue + tax, driven by SIGNED amounts exactly as stored (#216).
+ *  A positive amount lands on its natural side (DR for A/R, CR for revenue/tax); a negative lands
+ *  on the OPPOSITE side with its magnitude, so every emitted line carries non-negative columns —
+ *  the CSV and register render single-signed cells. The stored money sign IS the direction:
+ *  `createCredit` writes a CREDIT's total/lines negative, so a credit memo reverses itself (CR A/R,
+ *  DR revenue) with no kind-based flip, and `kind` survives only as the posting `sourceType`.
+ *  What the signed arithmetic buys over the old magnitudes-plus-kind: a MIXED-sign document — a
+ *  finalized invoice carrying a negative adjustment line is reachable end-to-end, the amount field
+ *  has no minimum — posts that line as a contra DEBIT instead of inflating the credit column, so
+ *  the batch balances instead of 500ing on the Σdebit backstop under a clean readiness list.
+ *  All lines carry this event's invoice id and isReversal:false (a new posting). */
 export function salesJournal(ev: SalesEvent): JournalLine[] {
-  const reverse = ev.kind === "CREDIT";
   const st: PostingSourceType = ev.kind;
+  const line = (id: string, name: string, debit: number, credit: number, memo: string): JournalLine =>
+    ({ side: "SALES", glAccountId: id, glAccountName: name, debit, credit, memo, sourceType: st, sourceId: ev.invoiceId, isReversal: false });
+  // Signed placement: `dr` is the natural-debit slot, `cr` the natural-credit slot; a negative
+  // amount takes the other side with |amt|.
   const dr = (id: string, name: string, amt: number, memo: string): JournalLine =>
-    ({ side: "SALES", glAccountId: id, glAccountName: name, debit: amt, credit: 0, memo, sourceType: st, sourceId: ev.invoiceId, isReversal: false });
+    amt >= 0 ? line(id, name, amt, 0, memo) : line(id, name, 0, -amt, memo);
   const cr = (id: string, name: string, amt: number, memo: string): JournalLine =>
-    ({ side: "SALES", glAccountId: id, glAccountName: name, debit: 0, credit: amt, memo, sourceType: st, sourceId: ev.invoiceId, isReversal: false });
+    amt >= 0 ? line(id, name, 0, amt, memo) : line(id, name, -amt, 0, memo);
   const lines: JournalLine[] = [];
-  lines.push(reverse ? cr(ev.arGlAccountId, ev.arGlAccountName, ev.total, "A/R") : dr(ev.arGlAccountId, ev.arGlAccountName, ev.total, "A/R"));
+  lines.push(dr(ev.arGlAccountId, ev.arGlAccountName, ev.total, "A/R"));
   for (const r of ev.revenue) {
     if (c(r.amount) === 0) continue;
-    lines.push(reverse ? dr(r.glAccountId, r.glAccountName, r.amount, "Revenue") : cr(r.glAccountId, r.glAccountName, r.amount, "Revenue"));
+    lines.push(cr(r.glAccountId, r.glAccountName, r.amount, "Revenue"));
   }
   if (c(ev.taxTotal) !== 0 && ev.taxGlAccountId) {
-    lines.push(reverse ? dr(ev.taxGlAccountId, ev.taxGlAccountName, ev.taxTotal, "Sales tax") : cr(ev.taxGlAccountId, ev.taxGlAccountName, ev.taxTotal, "Sales tax"));
+    lines.push(cr(ev.taxGlAccountId, ev.taxGlAccountName, ev.taxTotal, "Sales tax"));
   }
   return lines;
 }
