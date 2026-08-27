@@ -106,6 +106,10 @@ export async function updateUser(
   // `title` prints on the quote and cert signature blocks (Phase 6 ruling 14); "" clears it and
   // both builders then omit the line rather than print a blank.
   input: { displayName?: string; title?: string; roleId?: string | null; active?: boolean; password?: string },
+  // #237: when the same request also replaces overrides, they ride into the ONE shared
+  // transaction below rather than a second one — pass-through for updateUserWithOverrides,
+  // already validated there; direct callers omit it.
+  overrides?: { permission: string; mode: "GRANT" | "DENY" }[],
 ) {
   if (input.active === false && id === currentActor().id) {
     throw new HttpError(400, "You cannot deactivate your own account");
@@ -129,19 +133,62 @@ export async function updateUser(
     }
   }
 
+  await writeUser(id, input, overrides);
+}
+
+export async function setUserOverrides(id: string, overrides: { permission: string; mode: "GRANT" | "DENY" }[]) {
+  assertKnownPermissions(overrides);
+  await writeUser(id, undefined, overrides);
+}
+
+/**
+ * The route-facing combination (#237): PUT /api/admin/users/[id] may carry fields AND overrides,
+ * and running them as two service calls half-committed — the field update landed (and audited),
+ * then the overrides 400'd on an unknown permission, with only the error reported back. Every
+ * refusal now runs before the one shared transaction below, so a rejected request leaves nothing
+ * behind, and the combined write lands as ONE audit entry — one actor action, one entry, with the
+ * before/after snapshots carrying both the fields and the overrides (SNAPSHOT_INCLUDE pulls the
+ * override rows in).
+ */
+export async function updateUserWithOverrides(
+  id: string,
+  input: Parameters<typeof updateUser>[1] | undefined,
+  overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
+) {
+  if (overrides) assertKnownPermissions(overrides);
+  if (input && Object.keys(input).length) {
+    await updateUser(id, input, overrides); // runs updateUser's own guards, then the shared writer
+  } else if (overrides) {
+    await writeUser(id, undefined, overrides);
+  }
+}
+
+function assertKnownPermissions(overrides: { permission: string }[]) {
+  const unknown = overrides.filter((o) => !ALL_PERMISSIONS.includes(o.permission));
+  if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.map((o) => o.permission).join(", ")}`);
+}
+
+/** ONE transaction, ONE auditedUpdate, applying whichever parts are present (#237). */
+async function writeUser(
+  id: string,
+  input: Parameters<typeof updateUser>[1] | undefined,
+  overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
+) {
   await withDbErrors({ entity: "User" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("user", id, async () => {
-        const updated = await tx.user.update({
-          where: { id },
-          data: {
-            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-            ...(input.title !== undefined ? { title: input.title } : {}),
-            ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
-            ...(input.active !== undefined ? { active: input.active } : {}),
-            ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
-          },
-        });
+        const updated = input
+          ? await tx.user.update({
+              where: { id },
+              data: {
+                ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+                ...(input.title !== undefined ? { title: input.title } : {}),
+                ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
+                ...(input.active !== undefined ? { active: input.active } : {}),
+                ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
+              },
+            })
+          : undefined;
         // #218: a password reset must cut off every session minted under the old credential, or
         // a stolen/lingering session survives the reset and the sliding expiry keeps it alive
         // indefinitely; deactivation gets the same sweep as hygiene (getSessionUser already
@@ -151,23 +198,17 @@ export async function updateUser(
         // change is admin-route-only (no self-service route exists), and an admin resetting
         // their OWN password logs themselves out too — deliberate: simpler than threading the
         // acting token down here, and the safe direction.
-        if (input.password || input.active === false) {
+        if (input && (input.password || input.active === false)) {
           await tx.session.deleteMany({ where: { userId: id } });
+        }
+        if (overrides) {
+          await tx.userPermissionOverride.deleteMany({ where: { userId: id } });
+          await tx.userPermissionOverride.createMany({
+            data: overrides.map((o) => ({ userId: id, permission: o.permission, mode: o.mode })),
+          });
         }
         return updated;
       }, { tx })));
-}
-
-export async function setUserOverrides(id: string, overrides: { permission: string; mode: "GRANT" | "DENY" }[]) {
-  const unknown = overrides.filter((o) => !ALL_PERMISSIONS.includes(o.permission));
-  if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.map((o) => o.permission).join(", ")}`);
-  await prisma.$transaction((tx) =>
-    auditedUpdate("user", id, async () => {
-      await tx.userPermissionOverride.deleteMany({ where: { userId: id } });
-      await tx.userPermissionOverride.createMany({
-        data: overrides.map((o) => ({ userId: id, permission: o.permission, mode: o.mode })),
-      });
-    }, { tx }));
 }
 
 // 2 MB — small enough that pulling it into a before/after audit snapshot would be real memory

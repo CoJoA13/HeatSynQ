@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { handle, requireUser } from "@/server/http";
 import { mustDo } from "@/server/permissions";
-import { updateUser, setUserOverrides } from "@/server/users";
+import { updateUserWithOverrides } from "@/server/users";
 
 const Body = z.object({
   displayName: z.string().min(1).optional(),
@@ -19,7 +19,9 @@ export const PUT = handle(async (req, ctx) => {
   const { id } = await ctx.params;
   const body = Body.parse(await req.json());
   const { overrides, ...rest } = body;
-  if (Object.keys(rest).length) await updateUser(id, rest);
-  if (overrides) await setUserOverrides(id, overrides);
+  // #237: ONE service call, ONE transaction — a body carrying fields + overrides used to run as
+  // two transactions, so an overrides refusal left the field update already committed (and
+  // audited) with only the 400 reported back.
+  await updateUserWithOverrides(id, rest, overrides);
   return NextResponse.json({ ok: true });
 });
