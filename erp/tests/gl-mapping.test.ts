@@ -21,14 +21,57 @@ it("an invoice posts DR A/R = CR revenue + tax and balances", () => {
   expect(d).toBe(c); // balances
 });
 
-it("a credit reverses the sales entry (DR revenue/tax, CR A/R)", () => {
+it("a credit reverses the sales entry (DR revenue/tax, CR A/R) from its stored-negative signs", () => {
+  // #216: amounts arrive SIGNED, exactly as stored — `createCredit` writes a CREDIT's total and
+  // line amounts negative, and that sign (not the kind) is what flips the entry.
   const ev: SalesEvent = {
-    kind: "CREDIT", invoiceId: "c1", total: 50, arGlAccountId: "ar", arGlAccountName: "1200",
+    kind: "CREDIT", invoiceId: "c1", total: -50, arGlAccountId: "ar", arGlAccountName: "1200",
     taxTotal: 0, taxGlAccountId: null, taxGlAccountName: "",
-    revenue: [{ glAccountId: "rev", glAccountName: "4010", amount: 50 }],
+    revenue: [{ glAccountId: "rev", glAccountName: "4010", amount: -50 }],
   };
   const lines = salesJournal(ev);
   expect(lines.find((l) => l.glAccountId === "ar")!.credit).toBe(50);
+  expect(lines.find((l) => l.glAccountId === "rev")!.debit).toBe(50);
+  const { d, c } = sum(lines);
+  expect(d).toBe(c);
+});
+
+it("a negative adjustment line posts as a contra DEBIT, never a negative credit (#216)", () => {
+  // Reachable end-to-end: the invoice grid's amount field has no minimum, so a finalized
+  // invoice can carry a negative line beside positive ones. The old magnitude arithmetic
+  // credited |−20| and unbalanced the batch against the netted A/R total.
+  const ev: SalesEvent = {
+    kind: "INVOICE", invoiceId: "i2", total: 80,
+    arGlAccountId: "ar", arGlAccountName: "1200",
+    taxTotal: 0, taxGlAccountId: null, taxGlAccountName: "",
+    revenue: [
+      { glAccountId: "rev", glAccountName: "4010", amount: 100 },
+      { glAccountId: "adj", glAccountName: "4090", amount: -20 },
+    ],
+  };
+  const lines = salesJournal(ev);
+  expect(lines.find((l) => l.glAccountId === "ar")!.debit).toBe(80);
+  const adj = lines.find((l) => l.glAccountId === "adj")!;
+  expect(adj.debit).toBe(20);
+  expect(adj.credit).toBe(0);
+  for (const l of lines) { // both columns non-negative by construction — CSV/register render magnitudes
+    expect(l.debit).toBeGreaterThanOrEqual(0);
+    expect(l.credit).toBeGreaterThanOrEqual(0);
+  }
+  const { d, c } = sum(lines);
+  expect(d).toBe(c);
+});
+
+it("a negative tax total and a net-negative invoice total each flip their own side (#216)", () => {
+  const ev: SalesEvent = {
+    kind: "INVOICE", invoiceId: "i3", total: -13,
+    arGlAccountId: "ar", arGlAccountName: "1200",
+    taxTotal: -1, taxGlAccountId: "tax", taxGlAccountName: "2200",
+    revenue: [{ glAccountId: "rev", glAccountName: "4010", amount: -12 }],
+  };
+  const lines = salesJournal(ev);
+  expect(lines.find((l) => l.glAccountId === "ar")!.credit).toBe(13);
+  expect(lines.find((l) => l.glAccountId === "tax")!.debit).toBe(1);
   const { d, c } = sum(lines);
   expect(d).toBe(c);
 });

@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
+import { percentFromFraction } from "@/lib/rate-display";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
@@ -832,7 +833,9 @@ export function InvoiceDetail({ id }: { id: string }) {
           <div className="block">
             Tax rate
             <div className="mt-1 rounded border bg-slate-50 px-2 py-1 text-slate-600">
-              {invoice.taxRate === null ? "Not taxable" : `${invoice.taxRate}%`}
+              {/* #227: `taxRate` is the FROZEN fraction snapshot (0.07 = 7%); the old template
+                  printed "0.07%", understating the rate 100×. Read-side formatting only. */}
+              {invoice.taxRate === null ? "Not taxable" : `${percentFromFraction(invoice.taxRate)}%`}
             </div>
           </div>
         </div>

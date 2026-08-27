@@ -215,7 +215,7 @@ Where the money defaults live, and the GL accounts that invoice lines post to.
 
 | Field | What it does |
 |---|---|
-| Sales tax rate | The plant-wide rate; a customer can be taxable or not (chapter 9) |
+| Sales tax rate (%) | The plant-wide rate, entered as a percent — 7 means 7%; a customer can be taxable or not (chapter 9) |
 | Sales tax GL account | Where tax posts |
 | Freight GL account | Where freight lines post |
 | Other charge GL account | Where extra charges post |
@@ -224,7 +224,7 @@ Where the money defaults live, and the GL accounts that invoice lines post to.
 | Write-off GL account | Where bad debt posts |
 | Certification charge step code | The operation a cert charge bills under |
 | Certification charge default amount | The default cert charge |
-| Finance charge (monthly %) | The monthly late charge rate |
+| Finance charge (monthly %) | The monthly late charge rate, as a percent — 1.5 means 1.5% per month |
 | Bill for certification by default | Whether new work charges for certification |
 
 These accounts are what makes the month-end GL export balance (chapter 8). **An invoice line whose

@@ -35,6 +35,11 @@ describe("demo-seed", () => {
     expect(await prisma.glAccount.count({ where: { deletedAt: null } })).toBeGreaterThan(0);
     const billing = await prisma.billingConfig.findFirst({ where: { id: "singleton" } });
     expect(billing?.arGlAccountId).not.toBeNull();
+    // #227: `financeChargeRate` is a PERCENT number (1.5 = 1.5%/month — finance-charges.ts divides
+    // by 100), unlike the fraction-convention salesTaxRate beside it. The seed once wrote the
+    // fraction 0.015 here — a 0.015%/month charge, wrong by 100× in the dataset the manual's
+    // screenshots teach from. Pin the convention, not just "some value".
+    expect(billing?.financeChargeRate?.toNumber()).toBe(1.5);
 
     // Orders spanning every headline state (assert the SHAPE, not brittle counts).
     const statuses = new Set<string>(
