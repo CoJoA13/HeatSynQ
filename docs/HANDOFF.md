@@ -131,6 +131,37 @@ one (not a clean pass, an absence; CI's three required checks were green and the
 proceeded on them). Audit tally: **8 of the 29 filed issues closed** — #211–#215, #217–#218,
 #225; the session-security and audit-highs entries above carry their stories.
 
+**2026-08-26 — the money-conventions pair MERGED (`03dc071`, PR #247, squash), closing #216 and
+#227.** The GL export now sums invoice lines **SIGNED, in integer cents** — `salesJournal` places
+each amount by its own sign (positive on its natural side, negative on the opposite side with its
+magnitude, so every emitted line keeps non-negative columns) — closing #216's unbalanced-batch 500:
+a negative adjustment line is reachable end-to-end (the grid's amount field has no minimum), and
+Math.abs credited the gross while A/R debited the net, failing the Σdebit backstop **behind a clean
+readiness list**. The load-bearing design fact: `createCredit` stores CREDIT money negative, so
+**the stored sign IS the direction** — the kind-based flip is deleted (`kind` survives as
+`sourceType`), and every document whose signs match its kind emits byte-identical lines, keeping
+the prior-net/`sameNet` delta machinery untouched with no migration. The one pathological edge is
+documented at the code (review Minor 1): a sign-INVERTED uniform document previously posted on its
+magnitude sides and now posts on the semantically correct opposite sides — a re-export absorbs it
+as the standard balanced reversal+repost. Payment/application `Math.abs` stays, now with the
+verified claim that all four entry schemas enforce `min: "positive"`. #227 made every rate field
+display and accept **PERCENT** while storage and the wire keep their conventions (tax a fraction,
+finance charge already a percent number): a new `src/lib/rate-display.ts` leaf converts by **exact
+decimal-string point shift** (float multiply renders 0.07×100 as 7.000000000000001), wired at the
+billing page's three landings, the customer page's `applyPayload` landing (converted BEFORE the
+edit guard captures, so it compares like with like) and blur-saves — `save()` gained a `display`
+override because its optimistic set would flash the wire fraction into an input the `{ok:true}`
+echo never corrects — and the invoice header's frozen-fraction display ("0.07%", 100× understated)
+now formats read-side only. The demo seed's own 100× trap (`financeChargeRate` "0.0150") is
+corrected and convention-pinned (`toBe(1.5)`, red first). Manual chapters 9/12 state the
+conventions; the billing/customer PNGs intentionally drift (the PR #240 precedent). **Review:
+Codex was out of budget, so the repo's task-reviewer agent reviewed the diff instead — Approved /
+Spec ✅, zero Critical/Important, four Minors (one fixed on-branch, the docstring precision above;
+the >4-decimal-percent refusal wording ruled inherent to the server-stays-validator design).**
+The README status line rode along (owner ruling 2026-08-26): rewritten phase-agnostic, pointing
+here for the moving numbers. Gates: **3725 tests / 217 files**, `tsc`/`eslint`/`build` clean, E2E
+**25/25** locally and in CI. Audit tally: **10 of the 29 filed issues closed** — #211–#218, #225, #227.
+
 **2026-08-26 — THE MACHINE MOVED BACK TO FEDORA 44 (KDE), and every gate passed on it unchanged.**
 The Ubuntu 26.04 desktop of 2026-08-25 lasted one day; §8's `dnf` commands are **LIVE again** and the
 paragraph above is now the historical record, not the current machine. Standing the build up needed
