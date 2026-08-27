@@ -7,8 +7,10 @@
  * instead of once per document kind.
  *
  * `kind` decides which owner column(s) a row may carry, enforced in the database by
- * `StoredDocument_kind_owner_check`
- * (prisma/migrations/20260804122700_certs_and_shipping/migration.sql). `storeDocument` below maps
+ * `StoredDocument_kind_owner_check` (created in
+ * prisma/migrations/20260804122700_certs_and_shipping/migration.sql and re-stated whole at each
+ * DocumentKind widening — the schema's StoredDocument comment names the current definition,
+ * migrations/20260810120100_quoting as of Phase 6). `storeDocument` below maps
  * `DocumentOwner` onto exactly the combination that CHECK allows for each kind, so this module
  * cannot be made to construct an illegal row even before the constraint is reached.
  */
