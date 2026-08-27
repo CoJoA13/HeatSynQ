@@ -162,6 +162,32 @@ The README status line rode along (owner ruling 2026-08-26): rewritten phase-agn
 here for the moving numbers. Gates: **3725 tests / 217 files**, `tsc`/`eslint`/`build` clean, E2E
 **25/25** locally and in CI. Audit tally: **10 of the 29 filed issues closed** — #211–#218, #225, #227.
 
+**2026-08-27 — the write-consistency pair MERGED (`ac6a04c`, PR #251, squash), closing #237 and
+#222.** The users PUT no longer half-commits: `users.ts` funnels every write through one shared
+`writeUser` — ONE `$transaction`, ONE `auditedUpdate` — with the public exports kept as thin
+wrappers whose pre-checks (self-deactivation, last-manager guard) run before the transaction
+opens, the unknown-permission refusal as the writer's FIRST act (still pre-transaction, so every
+path validates by construction — review Minor 1, fixed on-branch), and the #218 session sweep
+inside the same transaction. `setUserOverrides` quietly gained the `withDbErrors` wrapper it
+always lacked. **Deliberate audit-granularity change:** a combined fields+overrides PUT lands as
+ONE audit entry carrying both diffs (one actor action, one entry); single-part requests are
+unchanged. Pinned red-first at the route: the half-committing body now leaves NOTHING behind, and
+the handler gained the 403 test it never had. The billing page (#222) runs the orders-hub shape:
+one mutation gate orders every landing (tickets before dispatch; the three-fetch load under ONE
+ticket so the reference lists cannot tear; accept applied-monotonic), accepted payloads merge
+through `editGuard.applyPayload` inside the accept branch, the §5.13 rollback rides the same gate,
+side-signals (`invalidateSetupBanner`, the saved-tick) fire BEFORE accept per the hub's #158
+ordering, and the hand-rolled focused-value ref is deleted for `onBlurSave`'s snapshot-set no-op —
+a strict improvement (a server value applied mid-session no longer mints an identical-diff audit
+write on blur). The #227 percent seams survive intact; the hub's dropped-straggler residual is
+accepted and documented at the code. **Review: the task-reviewer agent again (Codex still out of
+budget) — Approved / Spec ✅, zero Critical/Important, four Minors: one fixed on-branch, one
+filed as #250** (the last-manager guard has NEVER covered the overrides path — pre-existing,
+identical reachability before and after, deliberately not widened into this diff), one
+pre-existing error-banner semantic left, one coverage wish added. Gates: **3728 tests / 218
+files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI. Audit tally: **14 of the
+29 filed issues closed** — #211–#218, #222, #225, #227, #235–#237.
+
 **2026-08-26 — THE MACHINE MOVED BACK TO FEDORA 44 (KDE), and every gate passed on it unchanged.**
 The Ubuntu 26.04 desktop of 2026-08-25 lasted one day; §8's `dnf` commands are **LIVE again** and the
 paragraph above is now the historical record, not the current machine. Standing the build up needed
