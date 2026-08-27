@@ -52,6 +52,11 @@ const c = (n: number) => Math.round(n * 100);
  *  finalized invoice carrying a negative adjustment line is reachable end-to-end, the amount field
  *  has no minimum — posts that line as a contra DEBIT instead of inflating the credit column, so
  *  the batch balances instead of 500ing on the Σdebit backstop under a clean readiness list.
+ *  One precision on the compatibility claim (review, 2026-08-26): "identical to the old
+ *  arithmetic" holds for documents whose signs match their kind. A sign-INVERTED uniform document
+ *  (an all-negative INVOICE, an all-positive CREDIT) was exportable before and posted on its
+ *  magnitude sides; it now posts on the semantically correct opposite sides — a re-export of such
+ *  paper emits the standard changed-event reversal+repost pair, balanced, no migration needed.
  *  All lines carry this event's invoice id and isReversal:false (a new posting). */
 export function salesJournal(ev: SalesEvent): JournalLine[] {
   const st: PostingSourceType = ev.kind;
