@@ -82,8 +82,10 @@ widened, UI gates composed §5.16-style, and TWO backfill migrations (roles hold
 GRANT override on it; the applied first migration was extended by a second, never edited, the
 manage_backups precedent). Gates after (CI's own tally on the merged head): **3700 tests / 215
 files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally AND in CI, **54 migrations**. Fedora-era docs (§8 below,
-CLAUDE.md's environment notes, README) are STALE for this machine — the rewrite is **#235**,
-`ready-for-agent`, and until it lands read §8's Fedora commands as historical.
+CLAUDE.md's environment notes, README) were STALE for this machine while it ran Ubuntu — filed as
+**#235**. **That inverted on 2026-08-26, when the machine moved BACK to Fedora 44** (next paragraph):
+§8's Fedora commands are LIVE again and #235 was re-scoped rather than actioned as written. Read
+this paragraph as the record of a machine the project no longer runs on.
 
 **2026-08-26 — the session-security pair MERGED (`d0e1437`, PR #242, squash), closing #217 and
 #218.** The login cookie drops its fixed `Expires` (the browser deleted it
@@ -128,6 +130,43 @@ no Codex review record ever appeared on this PR** — the first of the session's
 one (not a clean pass, an absence; CI's three required checks were green and the merge
 proceeded on them). Audit tally: **8 of the 29 filed issues closed** — #211–#215, #217–#218,
 #225; the session-security and audit-highs entries above carry their stories.
+
+**2026-08-26 — THE MACHINE MOVED BACK TO FEDORA 44 (KDE), and every gate passed on it unchanged.**
+The Ubuntu 26.04 desktop of 2026-08-25 lasted one day; §8's `dnf` commands are **LIVE again** and the
+paragraph above is now the historical record, not the current machine. Standing the build up needed
+exactly the checklist §8 already documents — `npm install`, `cp .env.example .env`,
+`npx prisma generate`, `npx playwright install chromium` (the browser cache still does not travel
+with a checkout), `mkdir -p erp/backups` for the local `BACKUP_DIR`, the two `migrate deploy` calls
+and `db:seed` — plus a git identity, which was **again unset** on the fresh install and again would
+have failed at the first commit rather than at setup. The docker group was already correct.
+
+**The one thing §8 did NOT warn about, and the reason #235 was re-scoped instead of actioned:
+a host PostgreSQL server was occupying the compose port.** This install carries PGDG
+`postgresql18` **18.6** — but `postgresql18-server` came with it, `postgresql-18.service` was
+enabled, and it held `127.0.0.1:5432`, which is the exact address `docker-compose.yml:9` publishes
+the `db` service on. The collision is **silent until `docker compose up -d db` fails to bind**, and
+the symptom (a password-authentication failure against a server that is not ours) reads like a
+credentials problem, not a wrong-server one. This is the SAME trap #235 documented for *Ubuntu's*
+bare `postgresql` metapackage — it simply bit on Fedora instead, which is why §8's Fedora block now
+carries the warning and the client-only guidance for both distros. Resolved by
+`sudo systemctl disable --now postgresql-18.service` (owner's call, 2026-08-26: use the compose DB,
+the documented path); the 18.6 CLIENT stays installed and still matches the `postgres:18` tag the
+E2E `backups` flow spawns a real `pg_dump` against.
+
+Two further data points, both recorded because they are the kind of thing that gets "fixed" by
+mistake. **npm blocked all five install scripts** (`@prisma/engines`, `argon2`, `esbuild`, `prisma`,
+`unrs-resolver`) on npm **11.19.0** / Node **26.8.1** — §8 predicted this for npm 12 and the
+prediction holds a major earlier; each was verified individually rather than assumed (argon2 and
+esbuild resolve through prebuilds, `prisma generate` succeeds), so the warning is still EXPECTED and
+still must not be answered with `npm approve-scripts --all`. And **SELinux `:z` was NOT needed**:
+with SELinux Enforcing and Docker CE 29.7.2, `./db-init` mounted clean and `db-init/` created
+`erp_test` and `erp_practice` on the first try — the conditional framing in §8 and CLAUDE.md ("if
+you hit `permission denied`") is correct as written and should stay conditional.
+
+Gates on the new machine, all green and none re-run from cache: **3714 tests / 216 files**,
+`tsc`/`eslint`/`build` clean, E2E **25/25** with zero RETRIED, `manual:build` deterministic (empty
+`manual.html` diff, the CI docs-rot gate), **54 migrations** applied to `erp` and `erp_test`.
+`erp_practice` exists but is deliberately unmigrated — `app-practice` runs `migrate deploy` on start.
 
 **Fix MERGED to `main` as `a5aac43` (PR #114, squash, 2026-08-16) — `allocateNumber`'s counter-row
 seed is now atomic.** Standing up the
@@ -1226,7 +1265,19 @@ sudo dnf install -y git nodejs26 npm postgresql # or use nvm for node; Node 26 r
 # one place the real binary is exercised; vitest injects a fake) and by the restore runbook
 # (`erp/README.md`). Its major must match the `postgres:` image tag (currently 18) — pg_dump refuses
 # to dump a server newer than itself. Fedora 44's `postgresql` package is 18.4, matching today.
+#
+# ⚠ INSTALL THE CLIENT ONLY — never a *-server package. Fedora's `postgresql` is client-only and is
+# safe, but the PGDG repo's `postgresql18` pulls `postgresql18-server` easily, and a `dnf install
+# postgresql*` or a generic "install postgres on Fedora" guide lands you a SERVER that initdb's and
+# ENABLES `postgresql-<major>.service` on 127.0.0.1:5432 — the exact address docker-compose.yml:9
+# publishes the `db` service on. Compose then cannot bind, and the failure presents as a PASSWORD
+# AUTHENTICATION error against a server that is not ours, which reads like bad credentials rather
+# than the wrong server. Bit this project for real on 2026-08-26 (§4). Check and clear it with:
+#   ss -ltnp 'sport = :5432'                        # anything here before compose starts is a conflict
+#   sudo systemctl disable --now postgresql-18      # if a host server owns the port
+# Keeping the client is correct and required; only the server must go.
 # Node 26 ships npm 12, which does NOT run dependency install scripts unless you approve them.
+# (Observed on npm 11.19.0 / Node 26.8.1 too — the behavior arrived a major earlier than expected.)
 # `npm ci` prints a warning naming five: @prisma/engines, argon2, esbuild, prisma, unrs-resolver.
 # That warning is EXPECTED and must not be "fixed" with `npm approve-scripts --all`. None of the
 # five are needed: argon2 and esbuild ship prebuilt binaries (argon2's are N-API, so they are
@@ -1243,6 +1294,7 @@ sudo usermod -aG docker $USER   # then log out/in
 # 2. Project
 git clone https://github.com/CoJoA13/HeatSynQ.git && cd HeatSynQ/erp
 cp .env.example .env
+mkdir -p backups        # .env.example's BACKUP_DIR points here; /backups exists only in the container
 git config --global user.name "cojoa13"          # git REFUSES to commit without an identity, and it
 git config --global user.email "cjones1308@pm.me" # fails when you have work to save, not at setup
 docker compose up -d db   # a FRESH dbdata volume runs db-init/, creating erp_test AND erp_practice
@@ -1256,7 +1308,7 @@ npm run dev     # http://localhost:3000 — admin/admin, change it
 # 3. Prove it — the four gates (expect the §4 tally of the phase you are on)
 npm test
 npx tsc --noEmit
-npx eslint src tests
+npx eslint src tests e2e scripts prisma   # all five lintable dirs — `src tests` alone under-lints
 npx playwright install chromium   # one-time; the E2E harness spawns its own dev server on :3100
 npm run test:e2e                  # runs against the DEV db (erp), not erp_test
 ```
@@ -1266,7 +1318,15 @@ Use `migrate deploy` to **apply** migrations. `migrate dev` is only for **author
 Fedora-specific notes:
 - **SELinux**: the compose file bind-mounts `./db-init`, `./scripts/backup.sh`, and `./backups` (on both `app` and `backup` — Phase 8C mounts it on `app` too, for its archive list and on-demand dump). If Postgres init or the backup container hits `permission denied`, append `:z` to those four bind mounts in `erp/docker-compose.yml` (named volume `dbdata` needs nothing). Prefer `:z` labels over disabling SELinux.
 - **Podman**: if you use podman instead of Docker CE, you need `podman-docker` + a compose provider that supports `profiles` and `depends_on: condition: service_healthy`; Docker CE avoids the friction.
-- **firewalld**: only relevant when exposing the prod app to the shop LAN (`sudo firewall-cmd --add-port=80/tcp --permanent && sudo firewall-cmd --reload`).
+- **Exposure is IMMEDIATE, not opt-in — this bullet used to say the opposite.** `docker-compose.yml:26`
+  publishes the prod app as `80:3000`, i.e. on **every** interface, deliberately unlike the db's
+  `127.0.0.1:5432:5432`; the practice copy's `8080:3000` (line 49) is the same. So `--profile prod up`
+  reaches the shop LAN the moment it starts, and **a firewall rule is not a reliable gate**: Docker
+  inserts its published-port rules in its own chain, which commonly bypasses host firewall policy
+  (firewalld and ufw alike) — firewalld being `active`, as it is on this Fedora install, does not by
+  itself mean port 80 is closed. To actually restrict it, bind the publish to one interface
+  (`127.0.0.1:80:3000`, or a specific LAN address) rather than relying on the firewall, and **change
+  the seeded `admin`/`admin` password before the first `--profile prod up`, not after**.
 - Dev DB data from the old machine does not travel (it was throwaway seed/test data). If you ever need it: `erp/backups/` gzip dumps restore per `erp/README.md`.
 - **Run `npm run test:e2e` in the BACKGROUND.** It now runs close to ten minutes, which is the agent tooling's per-command ceiling; a run killed at the cap leaves a `ClosePeriod` row that the harness deliberately does NOT self-heal (its reaper is id+`closedById`-scoped so it can never hard-delete a real close). The next run then fails three flows — `invoice-shipped-order`, `receivables-apply-age-statement`, `close-month-end` — because the month is closed, and clearing it needs a hand-written `DELETE` of the `ClosePeriod` + its `GlExportBatch`/`GlPosting` rows against the DEV db. Verified end to end on 2026-08-16.
 

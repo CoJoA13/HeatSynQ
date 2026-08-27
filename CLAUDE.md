@@ -234,7 +234,9 @@ The Phase 1 process is worth keeping: a fresh subagent per task, an independent 
 
 ## Environment notes (Fedora)
 
-If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or either `./backups` bind mount (`app`'s and `backup`'s — Phase 8C mounts it on both), append `:z` to those four mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
+If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or either `./backups` bind mount (`app`'s and `backup`'s — Phase 8C mounts it on both), append `:z` to those four mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing. **Keep that conditional** — on Fedora 44 with SELinux Enforcing and Docker CE 29.7 the mounts came up clean and `:z` was not needed (2026-08-26), so adding it unconditionally would be cargo cult.
+
+**Install the Postgres CLIENT only, never a `*-server` package.** A host `postgresql-<major>.service` binds `127.0.0.1:5432` — the exact address compose publishes `db` on — so `docker compose up -d db` cannot bind, and the symptom is a *password authentication* failure against a server that is not ours. Check `ss -ltnp 'sport = :5432'` before blaming credentials; `sudo systemctl disable --now postgresql-18` clears it. The 18.x client must stay: the E2E `backups` flow spawns a real `pg_dump` and its major must match the `postgres:` image tag.
 
 ## Agent skills
 
