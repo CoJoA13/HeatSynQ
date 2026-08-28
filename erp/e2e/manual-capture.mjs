@@ -293,9 +293,10 @@ const ROUTE_PLAN = {
   "/invoicing": { ready: [{ heading: "Invoicing" }] },
   "/quotes": { ready: [{ heading: "Quotes" }] },
   "/receivables": { ready: [{ heading: "Receivables" }] },
-  // NOTE: /shipping's "No shipments" empty state is NOT loaded-guarded (it paints during the
-  // fetch, unlike every sibling list) — so the heading alone would let a mid-fetch shot through.
-  // Wait on the network too, and the sweep flags the finding.
+  // /shipping's empty state IS loaded-guarded since #223 (it used to paint during the fetch,
+  // alone among the sibling lists, and this entry's network wait was the workaround). The wait
+  // is kept as belt-and-braces — it is strictly stronger than the heading alone and costs one
+  // already-issued request — but it is no longer load-bearing.
   "/shipping": { ready: [{ api: "/api/shippers" }, { heading: "Shipping" }] },
   "/shipping/new": { ready: [{ heading: "New shipment" }] },
   "/receivables/close": { ready: [{ heading: "Period" }] },

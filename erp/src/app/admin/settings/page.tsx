@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 import { gate } from "@/lib/permission-ui";
 import { widgetKindFor, selectOptionsFor, selectLabelsFor, coerceForSubmit } from "@/lib/settings-ui";
 
@@ -17,8 +18,20 @@ export default function SettingsPage() {
   // (src/app/api/admin/settings/route.ts) — disabled with a tooltip, never hidden (§5.16).
   const canEdit = gate(perms, "admin.edit");
 
-  const load = () => api<Row[]>("/api/admin/settings").then(setRows).catch((e) => setError(e.message));
-  useEffect(() => { void load(); }, []);
+  // §5.13 stale-gate, both paths (F7) — #223 item 1: `save()` refires this per row interaction,
+  // so overlapping loads used to land by ARRIVAL and could repaint a committed toggle with its
+  // pre-save value (the step-codes/page.tsx saveQueue race, one screen over).
+  const latest = useLatest();
+  const load = useCallback(async () => {
+    const t = latest.next();
+    try {
+      const r = await api<Row[]>("/api/admin/settings");
+      if (latest.isCurrent(t)) setRows(r);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+    }
+  }, [latest]);
+  useEffect(() => { void load(); }, [load]);
 
   async function save(row: Row, raw: string | boolean) {
     const kind = widgetKindFor(row.key, row.value);

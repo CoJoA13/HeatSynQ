@@ -43,6 +43,10 @@ export function ShippingList() {
   const router = useRouter();
   const { permissions: perms, error: permsError } = usePermissions();
   const [rows, setRows] = useState<ShipperRow[]>([]);
+  // #223 item 5: the empty-state row must not render before the first load resolves (the
+  // CertList `loaded` convention) — `e2e/manual-capture.mjs` documents and works around this
+  // divergence by name. Only ever false→true, so no ticket of its own.
+  const [loaded, setLoaded] = useState(false);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -81,11 +85,12 @@ export function ShippingList() {
     try {
       data = await api<ShipperRow[]>(`/api/shippers${query ? `?${query}` : ""}`);
     } catch (e) {
-      if (latest.isCurrent(t)) setError((e as Error).message);
+      if (latest.isCurrent(t)) { setError((e as Error).message); setLoaded(true); }
       return;
     }
     if (!latest.isCurrent(t)) return;
     setRows(data);
+    setLoaded(true);
     setError(null);
   }, [query, latest]);
   useEffect(() => { void load(); }, [load]);
@@ -188,7 +193,7 @@ export function ShippingList() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && !error && (
+            {rows.length === 0 && loaded && !error && (
               <tr><td colSpan={10} className="p-4 text-center text-slate-400">No shipments</td></tr>
             )}
           </tbody>

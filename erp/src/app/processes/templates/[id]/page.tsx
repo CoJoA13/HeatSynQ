@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
@@ -72,10 +73,16 @@ function Detail({ id }: { id: string }) {
       return;
     }
     if (!latest.isCurrent(ticket)) return;
+    // #219: capture the bookkeeping ref BEFORE dispatching, and close the updater over the
+    // CAPTURED value. Read live (`lastServerName.current` inside the updater) this was the
+    // impure-updater/live-ref shape `use-edit-guard.ts` exists to prevent: `setTemplate` above
+    // has already marked pending lanes, so React runs this updater during the render pass —
+    // i.e. AFTER the synchronous `lastServerName.current = t.name` below — and the comparison
+    // never saw the pre-load value. On mount that made every branch fall through to `cur`, so
+    // the name box (this page's only identity element) rendered EMPTY on an existing template.
+    const prevServerName = lastServerName.current;
     setTemplate(t);
-    setNameDraft((cur) => (
-      lastServerName.current === null || cur === lastServerName.current ? t.name : cur
-    ));
+    setNameDraft((cur) => (prevServerName === null || cur === prevServerName ? t.name : cur));
     lastServerName.current = t.name;
     setError(null);
   }, [id, latest]);
@@ -240,8 +247,16 @@ function Detail({ id }: { id: string }) {
 
   return (
     <div className="p-6">
+      {/* #219: the screen carried no heading, breadcrumb or back link — with the name box blank
+          it identified itself not at all. The caption names the SERVER's name, so it still says
+          which template is open while the box holds an unsaved rename. */}
+      <Link href="/processes" className="text-sm text-blue-700 underline">← Process templates</Link>
+      <p className="mt-1 mb-1 text-sm text-slate-500">
+        Process template · <span className="font-medium text-slate-700">{template.name}</span>
+      </p>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
+               aria-label="Template name"
                disabled={!canEdit.allowed} title={canEdit.title}
                className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold disabled:bg-slate-50" />
         <button onClick={saveName} disabled={canEdit.disabled || !nameDirty} title={canEdit.title}

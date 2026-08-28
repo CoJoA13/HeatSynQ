@@ -309,6 +309,13 @@ function CustomerDetail({ id }: { id: string }) {
       try {
         await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
         setError(null);
+        // #220: the header PUT is `auditedUpdate("customer", …)` and this page mounts the
+        // customer's own <HistoryPanel> — but only `call()` (the address/contact children) was
+        // wired, so a credit-hold flip, the most consequential header edit, never appeared in
+        // the panel directly below it until an unrelated child action or a remount. The parts
+        // structural twin fires it here; the #158 census could not see the gap, being per-FILE
+        // and this file already invalidating elsewhere. Success path, the #124/#131 ordering.
+        invalidateHistory();
         return true;
       } catch (e) {
         // §5.13 rollback, detached: report first, then fire rollbackLoad() WITHOUT awaiting it

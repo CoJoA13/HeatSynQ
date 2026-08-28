@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
+import { useLatest } from "@/lib/use-latest";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -27,12 +28,18 @@ export function SetupChecklist() {
   const [busy, setBusy] = useState(false);
 
   const allowed = viewGate.allowed;
+  // §5.13 stale-gate, both paths (F7) — #223 item 2: every action refires this un-awaited while
+  // the buttons re-enable, so two rapid actions could repaint pre-action state. The window is
+  // wide by construction: `install-readiness.ts` argon2-verifies the admin password on every
+  // read. `setLoaded` stays UNGATED — it only ever goes false→true and gates the empty state.
+  const latest = useLatest();
   const load = useCallback(() => {
     if (!allowed) return;
+    const t = latest.next();
     api<Readiness>("/api/setup/readiness")
-      .then((d) => { setData(d); setLoaded(true); })
-      .catch((e) => { setError((e as Error).message); setLoaded(true); });
-  }, [allowed]);
+      .then((d) => { if (latest.isCurrent(t)) setData(d); setLoaded(true); })
+      .catch((e) => { if (latest.isCurrent(t)) setError((e as Error).message); setLoaded(true); });
+  }, [allowed, latest]);
   useEffect(load, [load]);
 
   async function putState(body: { confirmNumbers?: boolean; dismiss?: boolean }) {
