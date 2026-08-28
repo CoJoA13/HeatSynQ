@@ -223,6 +223,51 @@ cites as evidence — because re-capturing needs the demonstration dataset, not 
 Gates: **3733 tests / 219 files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI.
 Audit tally: **18 of the 29 filed issues closed** — #211–#223, #225, #227, #235–#237.
 
+**2026-08-28 — the E2E honesty pair MERGED (`cced679`, PR #255, squash), closing #233 and #234 —
+and it took THREE review rounds, which is the entry's real content.** The fixes themselves are
+small: practice-reset's two refusal tests both asserted only `403` while BOTH refusals are 403
+(`mustCan` first, then the practice-database gate), so neither discriminated and the permission
+test passed with `mustCan` deleted — now asserting the MESSAGE, **verified by deleting `mustCan`
+and watching it red**, which the old form did not; a bare `rejects.toThrow()` on customer
+validation now pins `ZodError` and `issues[].path`; `loads-after-print` now asserts the archived
+PDF's 200 and `%PDF-` magic, which its own header had always claimed it checked; `armDialog`/
+`armPrompt` are genuinely `page.once` (they promised one-shot over a permanent registration, and
+a second dialog crashed the harness process, skipping teardown); and `templates-admin` stopped
+asserting plant-wide state and PUTting an audited assignment onto `customers[0]` — the
+alphabetically-first customer in the dev DB, which any ambient "ACME" won — now matching this
+run's own fixture by exact code, with the page-wide "Standard" counts replaced by per-doc-type
+checks against each type's own `aria-label`led list.
+
+**The lesson is the review record, not the diff.** Every round produced a fix for a false claim
+that was ITSELF false, and none of it was caught by reading:
+**round 1** — the new per-type locator used `getByRole("list", { name })`, whose `name` is a
+case-insensitive SUBSTRING match, and "Shipping ticket" is a substring of "Multi-order shipping
+ticket", so it resolved to two lists and `templates-admin` failed deterministically ~10 minutes
+into the suite (the exact failure mode #234 exists to delete). **Caught by the E2E run**, which
+also correctly classified it assertion-level and refused to retry it; the reviewer reproduced it
+independently against this repo's Playwright. The same round's `/code/` message regex was **still
+vacuous** — zod 4 serializes `ZodError.message` as the JSON issue array and every issue carries
+its own `"code"` key, so it matched an error about any field. **Round 2** — the `.catch(() => {})`
+guard on the dialog accept was a downgrade (every caller awaits, so rejecting surfaces the real
+failure), and the `page.once` change made TWO other flows' docstrings false, since both cited
+ui.mjs's permanent listener as their reason to exist: one false guarantee fixed, two created.
+**Round 3** — the round-2 restatement was false again in the present tense ("this flow does not
+simply reuse ui.mjs" while line 46 imports `armPrompt` from it) and miscounted four dialog
+sequences as three; resolved by DELETING `armConfirmOnce`, which one-shot ui.mjs had left an exact
+behavioural duplicate, rather than re-wording its justification. The four residual Minors were all
+comment-accuracy — including the crash mechanic stated backwards (registration order means the
+STALE listener accepted first) — and were fixed rather than shipped, since comment accuracy is
+this pair's own subject. `docs/2026-08-09-phase-5c-demo.md` is annotated as SUPERSEDED rather than
+rewritten: it records what was true in Phase 5C.
+
+**Standing lesson: verifying that a change DOES something is not verifying that the CLAIM about it
+is true.** The mutation check — delete the guard, watch the test red — is the only evidence that
+separated a real assertion from a vacuous one here, and it is cheap. `armReopenDialogs` survives
+for the one thing ui.mjs has no shape for (a single listener spanning the reopen's back-to-back
+`confirm()` + `prompt()`, independently confirmed to be the app's only such pair). Gates:
+**3733 tests / 219 files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI. Audit
+tally: **20 of the 29 filed issues closed** — #211–#223, #225, #227, #233–#237.
+
 **2026-08-26 — THE MACHINE MOVED BACK TO FEDORA 44 (KDE), and every gate passed on it unchanged.**
 The Ubuntu 26.04 desktop of 2026-08-25 lasted one day; §8's `dnf` commands are **LIVE again** and the
 paragraph above is now the historical record, not the current machine. Standing the build up needed
