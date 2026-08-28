@@ -86,14 +86,13 @@ function periodRow(page, label) {
 }
 
 /**
- * A ONE-SHOT `confirm()` handler — unlike `armDialog` (ui.mjs), which registers a PERSISTENT
- * `page.on("dialog", ...)` listener that is never removed (fine for every existing flow, which
- * arms a dialog exactly once per run). This flow arms THREE separate dialog sequences on the same
- * `page` (two batch-post confirms, then a reopen confirm+prompt, then a void prompt) — a second
- * `armDialog`/`armPrompt` call on the same page would leave the FIRST listener still registered,
- * and Playwright's own dialog object can only be accepted/dismissed once, so the second listener to
- * fire on a later dialog crashes with "Cannot accept dialog which is already handled!" (caught live
- * during this task's own development). `page.once` self-removes after firing, so each of this
+ * A ONE-SHOT `confirm()` handler. `armDialog` (ui.mjs) is one-shot too since #233 item 4 — before
+ * that its listener was permanent, and this helper existed chiefly to avoid it. The history is
+ * worth keeping because it is why this flow does not simply reuse ui.mjs: it arms THREE separate
+ * dialog sequences on the same `page` (two batch-post confirms, then a reopen confirm+prompt, then
+ * a void prompt), and with a permanent listener the FIRST registration stayed live, so the second
+ * listener to fire on a later dialog crashed with "Cannot accept dialog which is already handled!"
+ * (caught live during this task's own development). Self-removal after firing means each of this
  * flow's three dialog sequences starts with a clean listener set.
  */
 function armConfirmOnce(page) {

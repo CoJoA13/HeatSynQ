@@ -51,11 +51,18 @@ describe("customers service", () => {
   it("requires both code and name", async () => {
     // #233 item 2: a bare `rejects.toThrow()` is satisfied by ANY throw — it passed with the
     // validation layer deleted, since the raw insert would throw something too. Assert the zod
-    // refusal and the field it names, so only a genuine validation failure satisfies it.
+    // refusal AND which field it names.
+    //
+    // The field is asserted on `issues[].path`, never on the message text (review finding): zod 4
+    // serializes `ZodError.message` as the JSON issue array, and every issue carries its own
+    // `"code": "invalid_type"` key — so a `/code/` message regex matches an error about ANY
+    // field, which is the same vacuity this test exists to remove.
     await expect(createCustomer({ code: "X" })).rejects.toThrow(ZodError);
-    await expect(createCustomer({ code: "X" })).rejects.toThrow(/name/);
+    await expect(createCustomer({ code: "X" })).rejects
+      .toMatchObject({ issues: [{ path: ["name"] }] });
     await expect(createCustomer({ name: "No code" })).rejects.toThrow(ZodError);
-    await expect(createCustomer({ name: "No code" })).rejects.toThrow(/code/);
+    await expect(createCustomer({ name: "No code" })).rejects
+      .toMatchObject({ issues: [{ path: ["code"] }] });
   });
 
   it("rejects a whitespace-only code", async () => {

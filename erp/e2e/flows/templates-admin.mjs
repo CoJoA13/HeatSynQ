@@ -68,7 +68,11 @@ export async function run(page, shot, ctx) {
   // claim about the whole plant that any custom template breaks, on a dev DB the run does not own.
   // Each type's list carries an aria-label, so the scope is the type's own <ul>.
   async function assertStandardDefault(typeName) {
-    const list = page.getByRole("list", { name: typeName });
+    // `exact: true` is LOAD-BEARING: getByRole's name option is a case-insensitive SUBSTRING
+    // match by default, and "Shipping ticket" is a substring of "Multi-order shipping ticket" —
+    // so the loose form matched two lists and died on a strict-mode violation (caught by the
+    // E2E run, not by reading).
+    const list = page.getByRole("list", { name: typeName, exact: true });
     await list.waitFor({ state: "visible" });
     const starred = list.locator("li").filter({ has: page.locator('[aria-label="default"]') });
     assert.equal(await starred.count(), 1, `${typeName}: exactly one starred default template`);

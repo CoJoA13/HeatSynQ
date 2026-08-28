@@ -1,28 +1,24 @@
-// Small shared helpers so the six flow modules don't each reinvent them.
+// Small shared helpers so the flow modules don't each reinvent them.
 import assert from "node:assert/strict";
 
 /**
- * Arms a one-shot `page.on("dialog", ...)` listener BEFORE the action that triggers a
+ * Arms a genuinely one-shot dialog listener BEFORE the action that triggers a
  * window.confirm()/prompt(), and returns a promise that resolves with the dialog's message once
  * Playwright has accepted it. Call this first, THEN perform the click — registering the
  * listener after the click risks the dialog firing (and Playwright's built-in auto-dismiss
  * kicking in) before the handler exists.
+ *
+ * The listener self-removes after one dialog (#233 item 4). It did NOT before: this docstring
+ * claimed one-shot over a permanent registration, so a second dialog re-entered the handler and
+ * tried to accept one Playwright had already handled — a rejection with nothing left to reject,
+ * i.e. an unhandled rejection that kills the harness process and skips teardown. A second dialog
+ * now meets Playwright's own auto-dismiss, the documented default.
  */
 export function armDialog(page) {
-  return new Promise((resolve) => {
-    // `page.once`, not `page.on` (#233 item 4): the docstring promised one-shot while the listener
-    // was permanent, so a SECOND dialog re-entered this handler and called accept() on a dialog
-    // Playwright had already handled — an unhandled rejection inside an async listener, which
-    // kills the harness process and skips teardown. A second dialog now meets Playwright's own
-    // auto-dismiss, the documented default, instead of a crash.
-    page.once("dialog", async (dialog) => {
+  return new Promise((resolve, reject) => {
+    page.once("dialog", (dialog) => {
       const message = dialog.message();
-      // Guarded: an accept() that rejects inside an async listener is an UNHANDLED rejection,
-      // which kills the harness process outright and skips teardown — the crash mode this
-      // helper's "one-shot" claim was hiding. Resolve either way; the caller asserts on the
-      // message, and a genuinely unhandled dialog surfaces as that assertion failing.
-      await dialog.accept().catch(() => {});
-      resolve(message);
+      dialog.accept().then(() => resolve(message)).catch(reject);
     });
   });
 }
@@ -36,11 +32,10 @@ export function armDialog(page) {
  * reusing armDialog with a second optional parameter that every OTHER caller would have to ignore.
  */
 export function armPrompt(page, responseText) {
-  return new Promise((resolve) => {
-    page.once("dialog", async (dialog) => { // one-shot + guarded, exactly as armDialog above
+  return new Promise((resolve, reject) => {
+    page.once("dialog", (dialog) => { // one-shot, exactly as armDialog above
       const message = dialog.message();
-      await dialog.accept(responseText).catch(() => {});
-      resolve(message);
+      dialog.accept(responseText).then(() => resolve(message)).catch(reject);
     });
   });
 }
