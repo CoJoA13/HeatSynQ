@@ -18,6 +18,34 @@ type TemplateStep = {
 type Template = { id: string; name: string; active: boolean; steps: TemplateStep[] };
 type StepCodeOption = { id: string; code: string; name: string; active: boolean };
 
+/**
+ * Which name the box should show once a load lands: the server's, or the rename the user has
+ * typed and not yet saved.
+ *
+ * Hook-free and exported so tests/process-template-name.test.ts can drive it directly — this repo
+ * has no DOM test environment, and the established answer is to split the DECISION out of the
+ * component (`printControlTitle` in receivables/statements/Statements.tsx, `runControlState` in
+ * admin/backups/page.tsx) rather than reach for one.
+ *
+ * `prevServerName` is the name the LAST load returned, or null before any has — and it MUST be
+ * read at dispatch time, not inside the setState updater (#219): the caller writes the ref
+ * immediately after dispatching, and React runs the updater during the render pass, so a live
+ * read always saw the just-written value and every branch fell through to `cur`. On mount that
+ * left the box EMPTY on an existing template — this page's only identity element.
+ *
+ * The rule is focus-INDEPENDENT by design (Codex PR #22): every step action reloads after focus
+ * has left the box, so an unsaved rename must survive a load the user did not initiate. That is
+ * why this is not `use-edit-guard`'s `applyPayload`, which preserves only the FOCUSED field.
+ */
+export function adoptServerName(
+  args: { prevServerName: string | null; currentDraft: string; serverName: string },
+): string {
+  const { prevServerName, currentDraft, serverName } = args;
+  if (prevServerName === null) return serverName;      // first load — nothing typed to protect
+  if (currentDraft === prevServerName) return serverName; // untouched since the last load — adopt
+  return currentDraft;                                  // an unsaved rename — keep it
+}
+
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
   // Next reuses this route's component instance across /processes/templates/A ->
@@ -82,7 +110,9 @@ function Detail({ id }: { id: string }) {
     // the name box (this page's only identity element) rendered EMPTY on an existing template.
     const prevServerName = lastServerName.current;
     setTemplate(t);
-    setNameDraft((cur) => (prevServerName === null || cur === prevServerName ? t.name : cur));
+    setNameDraft((cur) => adoptServerName({
+      prevServerName, currentDraft: cur, serverName: t.name,
+    }));
     lastServerName.current = t.name;
     setError(null);
   }, [id, latest]);
@@ -251,9 +281,8 @@ function Detail({ id }: { id: string }) {
           it identified itself not at all. The caption names the SERVER's name, so it still says
           which template is open while the box holds an unsaved rename. */}
       <Link href="/processes" className="text-sm text-blue-700 underline">← Process templates</Link>
-      <p className="mt-1 mb-1 text-sm text-slate-500">
-        Process template · <span className="font-medium text-slate-700">{template.name}</span>
-      </p>
+      <h1 className="mt-1 text-2xl font-semibold">{template.name}</h1>
+      <p className="mb-2 text-xs text-slate-500">Process template</p>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
                aria-label="Template name"

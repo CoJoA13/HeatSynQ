@@ -65,9 +65,9 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   // wiped by the 409 rollback's config reset (conflict).
   const editEpoch = useLatest();
 
-  const load = useCallback(async (isStale?: () => boolean) => {
+  const load = useCallback(async (isStale: () => boolean) => {
     const d = await api<Detail>(`/api/templates/${templateId}`);
-    if (isStale?.()) return; // #223 item 3 — a superseded mount payload must not reset the editor
+    if (isStale()) return; // #223 item 3 — a superseded mount payload must not reset the editor
     setDetail(d);
     if (d.draft) {
       setConfig(d.draft.config);

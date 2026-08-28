@@ -31,14 +31,16 @@ export function SetupChecklist() {
   // §5.13 stale-gate, both paths (F7) — #223 item 2: every action refires this un-awaited while
   // the buttons re-enable, so two rapid actions could repaint pre-action state. The window is
   // wide by construction: `install-readiness.ts` argon2-verifies the admin password on every
-  // read. `setLoaded` stays UNGATED — it only ever goes false→true and gates the empty state.
+  // read. `setLoaded` is gated with the payload (review finding): released alone, a superseded
+  // response could clear the loading line while `data` was still null — a blank body. The
+  // superseding response always sets it, so gating costs nothing.
   const latest = useLatest();
   const load = useCallback(() => {
     if (!allowed) return;
     const t = latest.next();
     api<Readiness>("/api/setup/readiness")
-      .then((d) => { if (latest.isCurrent(t)) setData(d); setLoaded(true); })
-      .catch((e) => { if (latest.isCurrent(t)) setError((e as Error).message); setLoaded(true); });
+      .then((d) => { if (latest.isCurrent(t)) { setData(d); setLoaded(true); } })
+      .catch((e) => { if (latest.isCurrent(t)) { setError((e as Error).message); setLoaded(true); } });
   }, [allowed, latest]);
   useEffect(load, [load]);
 
