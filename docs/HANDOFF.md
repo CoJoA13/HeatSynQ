@@ -188,6 +188,41 @@ pre-existing error-banner semantic left, one coverage wish added. Gates: **3728 
 files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI. Audit tally: **14 of the
 29 filed issues closed** — #211–#218, #222, #225, #227, #235–#237.
 
+**2026-08-27 — the precedent-clone batch MERGED (`0e612aa`, PR #253, squash), closing #219, #220,
+#221 and #223.** Four audit issues, each a copy of a pattern already in the repo that the sweep
+establishing it could not see. **#219 was the one real logic bug:** the process-template name box —
+that page's only identity element — rendered EMPTY on every existing template, because
+`setNameDraft`'s updater read `lastServerName.current` LIVE while the ref is written synchronously
+after dispatch; `setTemplate` had already marked pending lanes, so React ran the updater during the
+render pass, after the write, and every branch fell through to the empty draft. Fixed by capturing
+before dispatch — placed AFTER the stale gate, so a dropped response neither captures nor advances
+the rename bookkeeping. **The issue's own prescribed fix was deliberately rejected and the rejection
+independently verified:** `useEditGuard.applyPayload` preserves only the FOCUSED field, while
+`lastServerName` preserves an unsaved rename after focus has moved — and every step action on that
+page reloads exactly then (the Codex PR #22 guarantee), so adopting the guard would have traded the
+blank box for a silently discarded rename. #220 wired `invalidateHistory()` onto the customer HEADER
+save (20+ fields through `auditedUpdate`, with the page mounting the customer's own panel — a
+credit-hold flip never showed in the panel below it); **the #158 census cannot see that class, being
+per-FILE while this file already invalidates from its address/contact path**, so the gap is recorded
+at the fixed site. #221 was the missed third copy of the documents-list stale gate. #223 took six
+stragglers: ticket-gated loads on `admin/settings` and the setup checklist, an effect-scoped stale
+flag on the template editor's mount load, and `loaded`-flag empty states on the board, shipping list
+and statements documents (failure paths release the flag too, or a failed first load leaves a blank
+table under its error banner). **The review earned its keep twice** (task-reviewer again — Codex
+still out of budget — Approved / Spec ✅, zero Critical/Important, five Minors all fixed
+on-branch): it caught a REGRESSION this batch introduced, the statements panel blanking to
+`Loading…` for a round trip after every print because `refresh` bumps that dep and the reset copied
+the precedent's intent rather than its monotonic shape; and it surfaced the house answer for
+DOM-less client logic that the batch had missed — a decision helper exported and driven directly
+(`printControlTitle`'s precedent) — which turned #219 from fixed-and-unguarded into
+`adoptServerName` + `tests/process-template-name.test.ts`, the mount case pinned so a reintroduced
+live-ref read reddens a test rather than awaiting another human screen audit. **Accepted deferral:**
+`docs/manual/img/processes-templates-detail.png` still shows the blank box — the very defect #219
+cites as evidence — because re-capturing needs the demonstration dataset, not the dev DB (the
+#227/#240 precedent); nothing mechanical catches it, so it is queued for the next dataset pass.
+Gates: **3733 tests / 219 files**, `tsc`/`eslint`/`build` clean, E2E **25/25** locally and in CI.
+Audit tally: **18 of the 29 filed issues closed** — #211–#223, #225, #227, #235–#237.
+
 **2026-08-26 — THE MACHINE MOVED BACK TO FEDORA 44 (KDE), and every gate passed on it unchanged.**
 The Ubuntu 26.04 desktop of 2026-08-25 lasted one day; §8's `dnf` commands are **LIVE again** and the
 paragraph above is now the historical record, not the current machine. Standing the build up needed
