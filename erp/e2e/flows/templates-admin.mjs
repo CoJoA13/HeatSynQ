@@ -26,7 +26,18 @@
 //
 // The created template ("E2E Doc Template") is fully owned by this flow and reaped by name in
 // db-fixtures.ts (deleteDocumentTemplatesByName); the seeded Standard templates are only read, and
-// this flow never sets a default or assigns to a customer, so no shared/seeded state is mutated.
+// this flow never sets a type DEFAULT.
+//
+// ONE ambient claim remains, deliberately (#234's own fix text sanctions it): each document type's
+// starred default is asserted to be named exactly "Standard", the seeded name. A dev DB whose owner
+// has made their own template the default for some type will red this flow, and `preflight.mjs`
+// does not cover it. That is a narrowed, named residual of what #234 removed, not an oversight.
+//
+// It DOES assign that template to a customer (the Task 20 section below) — the header used to say
+// it never did, a false guarantee corrected with #234. Two things keep that honest: the assignment
+// targets this run's OWN fixture customer, matched by exact code, and it is cleared back to
+// use-default/inherit in the same section. `deleteDocumentTemplatesByName` also reaps any
+// assignment pointing at this flow's template, so a mid-flow failure cannot leave one behind.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +68,23 @@ export async function run(page, shot, ctx) {
   // default is visible) before counting, or the count reads 0 against an empty list.
   await page.locator('li [aria-label="default"]').first().waitFor({ state: "visible" });
 
+  // #234: assert PER DOCUMENT TYPE, never plant-wide. The old form counted every list item whose
+  // text contained "Standard" and every starred row on the page, expecting exactly 8 of each — a
+  // claim about the whole plant that any custom template breaks, on a dev DB the run does not own.
+  // Each type's list carries an aria-label, so the scope is the type's own <ul>.
+  async function assertStandardDefault(typeName) {
+    // `exact: true` is LOAD-BEARING: getByRole's name option is a case-insensitive SUBSTRING
+    // match by default, and "Shipping ticket" is a substring of "Multi-order shipping ticket" —
+    // so the loose form matched two lists and died on a strict-mode violation (caught by the
+    // E2E run, not by reading).
+    const list = page.getByRole("list", { name: typeName, exact: true });
+    await list.waitFor({ state: "visible" });
+    const starred = list.locator("li").filter({ has: page.locator('[aria-label="default"]') });
+    assert.equal(await starred.count(), 1, `${typeName}: exactly one starred default template`);
+    // Exact name, not a substring: "Standard Plus" must not satisfy "the seeded default is Standard".
+    await starred.getByText("Standard", { exact: true }).waitFor({ state: "visible" });
+  }
+
   // All 8 document types are offered (the create picker) and each has its Standard default starred.
   const docTypePicker = page.getByRole("combobox", { name: "New template document type" });
   await assert.equal(await docTypePicker.locator("option").count(), 8, "the create picker offers all 8 document types");
@@ -64,14 +92,7 @@ export async function run(page, shot, ctx) {
     await docTypePicker.locator("option").allTextContents(), DOC_TYPES,
     "the 8 document types render in spec order",
   );
-  await assert.equal(
-    await page.locator('li [aria-label="default"]').count(), 8,
-    "each of the 8 document types has exactly one starred (default) template",
-  );
-  await assert.equal(
-    await page.getByRole("listitem").filter({ hasText: "Standard" }).count(), 8,
-    "the seeded default for each type is named Standard",
-  );
+  for (const typeName of DOC_TYPES) await assertStandardDefault(typeName);
   await shot("templates-list-8-types-standard-starred");
 
   // --- Create a template under Traveler — creating opens its v1 draft ---
@@ -241,21 +262,32 @@ export async function run(page, shot, ctx) {
   await shot("editor-preview-reflects-edit");
 
   // --- Task 20: the customer-page template-assignment picker (§5.2, §5.15, §5.16) ---
-  // Still as admin. Assign the just-published "E2E Doc Template" (a Traveler template) to a real
-  // customer through the picker, watch the resolved state reflect it, then clear back to the type's
-  // default. The page's request context shares the browser cookies, so it reads /api/customers as this admin.
+  // Still as admin. Assign the just-published "E2E Doc Template" (a Traveler template) to THIS
+  // RUN'S OWN fixture customer through the picker, watch the resolved state reflect it, then clear
+  // back to the type's default. The page's request context shares the browser cookies, so it reads
+  // /api/customers as this admin.
+  //
+  // #234: this used to take `customers[0]` — the alphabetically-FIRST customer in the dev DB.
+  // `listCustomers` orders by code ascending and every fixture customer is E2E*-coded, so any
+  // ambient customer ("ACME") sorted first and won: the flow then asserted that stranger's picker
+  // state and PUT a real, audited assignment onto a row the run does not own. Matching the fixture
+  // by its exact code is every other flow's pattern.
   const customers = await (await page.request.get(`${ctx.baseURL}/api/customers`)).json();
-  assert.ok(Array.isArray(customers) && customers.length > 0, "at least one customer exists to assign a template to");
-  await page.goto(`${ctx.baseURL}/customers/${customers[0].id}`);
+  assert.ok(Array.isArray(customers), "the customers list reads as an array");
+  const target = customers.find((c) => c.code === fixtures.customerCode);
+  assert.ok(target, `the fixture customer ${fixtures.customerCode} is present to assign a template to`);
+  await page.goto(`${ctx.baseURL}/customers/${target.id}`);
 
   // The picker is its own section; its two reads (the requireUser-only names + the customers.view
   // resolved state) are async and compiled by `next dev` on first hit, so wait for the Traveler
   // select to render rather than the loading line.
   const travelerPicker = page.getByRole("combobox", { name: "Template for Traveler" });
   await travelerPicker.waitFor({ state: "visible" });
-  // No customer carries a TRAVELER assignment before this flow, so the select starts on the
-  // use-default/inherit option (§5.15 shows the resolved state beside it, never blank).
-  assert.equal(await travelerPicker.inputValue(), "", "the Traveler picker starts on use-default/inherit");
+  // The FIXTURE customer carries no TRAVELER assignment before this flow (#234: previously stated
+  // of whichever customer sorted first, which is not this run's to claim), so the select starts on
+  // the use-default/inherit option (§5.15 shows the resolved state beside it, never blank).
+  assert.equal(await travelerPicker.inputValue(), "",
+    `${fixtures.customerCode}'s Traveler picker starts on use-default/inherit`);
 
   // Assign the published template — the PUT lands and the resolved state reloads to show it OWNED.
   await travelerPicker.selectOption({ label: DOC_TEMPLATE_NAME });
@@ -292,10 +324,9 @@ export async function run(page, shot, ctx) {
   );
   // The list still renders fully for a viewer — this is the disabled-with-reason path, not denied.
   // Wait for the async list before counting (same reason as the admin section above).
-  await page.getByRole("listitem").filter({ hasText: "Standard" }).first().waitFor({ state: "visible" });
-  await assert.equal(
-    await page.getByRole("listitem").filter({ hasText: "Standard" }).count(), 8,
-    "a view-only user still sees all 8 types' templates",
-  );
+  await page.locator('li [aria-label="default"]').first().waitFor({ state: "visible" });
+  // #234: per-type again — the claim is "a viewer still sees every type's seeded default", which
+  // is exactly what this asserts, without counting rows the run does not own.
+  for (const typeName of DOC_TYPES) await assertStandardDefault(typeName);
   await shot("templates-view-only-user-controls-disabled");
 }

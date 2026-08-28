@@ -43,12 +43,14 @@ const VOID_REVERSAL_REASON =
   "E2E reverse-shipment flow: voiding the reversal, the blessed undo, for the demo.";
 
 /**
- * A ONE-SHOT `prompt()` handler. `armPrompt` (ui.mjs) registers a PERSISTENT `page.on("dialog")`
- * listener that is never removed — fine for the flows that arm exactly one dialog per run, but this
- * flow arms FOUR on the same page (reverse, unlock, void, re-reverse) and a lingering earlier
- * listener would try to accept a later dialog a second time ("Cannot accept dialog which is already
- * handled!"). `page.once` self-removes; the `close-month-end.mjs` `armConfirmOnce` precedent, for
- * prompts instead of confirms.
+ * A ONE-SHOT `prompt()` handler that also TYPE-CHECKS the dialog it receives — which is what
+ * still distinguishes it from `armPrompt` (ui.mjs), not its listener lifetime. Both are one-shot
+ * since #233 item 4; before that, ui.mjs's listener was permanent and this helper existed chiefly
+ * to avoid it, since this flow arms FOUR dialogs on the same page (reverse, unlock, void,
+ * re-reverse) and a lingering earlier listener would try to accept a later dialog a second time
+ * ("Cannot accept dialog which is already handled!"). The remaining reason to keep this local
+ * copy is the type check below: a `confirm` arriving where a prompt is expected fails HERE with a
+ * message saying so, rather than silently submitting an empty prompt default downstream.
  */
 function armPromptOnce(page, responseText) {
   return new Promise((resolve, reject) => {

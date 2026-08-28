@@ -36,13 +36,23 @@ describe("practice reset (Phase 8B §5.3)", () => {
     expect(await prisma.order.count()).toBeGreaterThan(0);
   });
 
-  it("the route is refused on a non-practice database", async () => {
+  // #233 item 1: both refusals are 403 — `mustCan` fires first, then the practice-database gate —
+  // so a bare status assertion cannot tell them apart, and the permission test below passed
+  // whether or not `mustCan` was still there (erp_test is never erp_practice, so the db gate
+  // would have answered anyway). Assert the MESSAGE, the only thing that distinguishes them.
+  it("the route is refused on a non-practice database, naming the practice copy", async () => {
     const cookie = await signInWith(["admin.view", "admin.edit"], "reset-admin");
-    expect((await POST(postReq(cookie), noParams)).status).toBe(403);
+    const res = await POST(postReq(cookie), noParams);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Reset is only available on the practice copy.");
   });
 
-  it("the route is refused without admin.edit", async () => {
+  it("the route is refused without admin.edit, by the PERMISSION check not the db gate", async () => {
     const cookie = await signInWith(["admin.view"], "reset-viewer");
-    expect((await POST(postReq(cookie), noParams)).status).toBe(403);
+    const res = await POST(postReq(cookie), noParams);
+    expect(res.status).toBe(403);
+    // The permission wording, NOT "Reset is only available on the practice copy." — delete the
+    // `mustCan` and this reddens, which the old status-only assertion could not do.
+    expect((await res.json()).error).toBe("You do not have permission for that");
   });
 });

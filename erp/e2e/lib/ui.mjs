@@ -1,37 +1,54 @@
-// Small shared helpers so the six flow modules don't each reinvent them.
+// Small shared helpers so the flow modules don't each reinvent them.
 import assert from "node:assert/strict";
 
 /**
- * Arms a one-shot `page.on("dialog", ...)` listener BEFORE the action that triggers a
+ * Arms a genuinely one-shot dialog listener BEFORE the action that triggers a
  * window.confirm()/prompt(), and returns a promise that resolves with the dialog's message once
  * Playwright has accepted it. Call this first, THEN perform the click — registering the
  * listener after the click risks the dialog firing (and Playwright's built-in auto-dismiss
  * kicking in) before the handler exists.
+ *
+ * The listener self-removes after one dialog (#233 item 4). It did NOT before: this docstring
+ * claimed one-shot over a permanent registration, so arming twice on one page left BOTH listeners
+ * live. Node fires them in registration order, so on the next dialog the STALE listener accepted
+ * first and succeeded, and the freshly-armed one then hit "Cannot accept dialog which is already
+ * handled!" — its own promise still pending, but the old body had no reject path, so the throw
+ * escaped the async listener as an unhandled rejection: a harness crash that skips teardown.
+ * A second dialog now meets Playwright's own auto-dismiss, the documented default.
+ *
+ * A rejection here is BEST-EFFORT, not a reliable flow failure (review round 2). Callers arm,
+ * then `await` the triggering click, and only then `await` this promise — but a rejecting
+ * `accept()` leaves the dialog open, so that click never resolves and the rejection crosses a
+ * microtask checkpoint with no handler attached. The harness registers no `unhandledRejection`
+ * hook, so Node's default applies: a crash that skips teardown. Rejecting still beats resolving
+ * with an unaccepted dialog (which would assert green on a lie), and one-shot makes the trigger
+ * nearly unreachable — but do not read `.catch(reject)` as a guarantee the flow reports this.
  */
 export function armDialog(page) {
-  return new Promise((resolve) => {
-    page.on("dialog", async (dialog) => {
+  return new Promise((resolve, reject) => {
+    page.once("dialog", (dialog) => {
       const message = dialog.message();
-      await dialog.accept();
-      resolve(message);
+      dialog.accept().then(() => resolve(message)).catch(reject);
     });
   });
 }
 
 /**
- * Same shape as `armDialog` above, for a `window.prompt(...)` (Task 17's void-order flow, the
- * only prompt() in the app — order hub's void reason). `dialog.accept(responseText)` supplies the
+ * Same shape as `armDialog` above, for a `window.prompt(...)`. Its callers are the reason-capturing
+ * dialogs — void, unlock, reopen, quote close — and the app raises non-reason prompts too (the
+ * admin users page's "New password"). The order hub's void reason was the first, in Task 17; this
+ * docstring named it as the app's ONLY prompt() long after that stopped being true, which is the
+ * #233 defect class in this file's own comments. `dialog.accept(responseText)` supplies the
  * typed answer; a bare `accept()` (what `armDialog` calls) would submit prompt()'s empty default,
  * which is indistinguishable from a user who typed nothing — voidOrder's own service rejects that
  * with a 400 ("A reason is required to void an order"), so this needs its own helper rather than
  * reusing armDialog with a second optional parameter that every OTHER caller would have to ignore.
  */
 export function armPrompt(page, responseText) {
-  return new Promise((resolve) => {
-    page.on("dialog", async (dialog) => {
+  return new Promise((resolve, reject) => {
+    page.once("dialog", (dialog) => { // one-shot, exactly as armDialog above
       const message = dialog.message();
-      await dialog.accept(responseText);
-      resolve(message);
+      dialog.accept(responseText).then(() => resolve(message)).catch(reject);
     });
   });
 }
