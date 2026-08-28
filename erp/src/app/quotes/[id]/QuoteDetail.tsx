@@ -26,6 +26,7 @@ import Link from "next/link";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
@@ -68,11 +69,17 @@ function QuoteDocumentsList({ quoteId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch
+  // (the InvoiceDocumentsList / ShipmentDocumentsList shape — #221 was this copy going missing,
+  // so the mount GET could land after the post-print refetch and hide a just-archived document).
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/quotes/${quoteId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [quoteId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/quotes/${quoteId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) { setDocs(rows); setErr(null); } })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [quoteId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;

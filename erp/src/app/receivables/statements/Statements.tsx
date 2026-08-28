@@ -78,6 +78,12 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // #223 item 6: "Nothing printed yet." must not render while the first fetch is in flight (the
+  // CertList `loaded` convention). Recorded as WHICH customer has been loaded rather than a
+  // boolean that gets reset: `refresh` bumps on every print, and resetting on that blanked this
+  // table to "Loading…" for a round trip after each one, where it used to stay put and grow
+  // (review finding). Derived, so a reprint never flashes and a selection change is still clean.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const allowed = viewGate.allowed;
   // §5.13 stale-gate, both paths (F7), the ShipmentDocumentsList shape — with the ticket taken at
   // the TOP of the effect, before the early-return clear, so clearing the selection also
@@ -87,8 +93,8 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
     const t = latest.next();
     if (!allowed || !customerId) { setDocs([]); return; }
     api<StoredDoc[]>(`/api/receivables/statements/documents?customerId=${customerId}`)
-      .then((d) => { if (latest.isCurrent(t)) { setDocs(d); setErr(null); } })
-      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+      .then((d) => { if (latest.isCurrent(t)) { setDocs(d); setErr(null); setLoadedFor(customerId); } })
+      .catch((e) => { if (latest.isCurrent(t)) { setErr((e as Error).message); setLoadedFor(customerId); } });
   }, [customerId, allowed, refresh, latest]);
 
   if (!viewGate.allowed) {
@@ -96,6 +102,7 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
   }
   if (!customerId) return <p className="text-sm text-slate-500">Pick a customer to see its statement history.</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
+  if (loadedFor !== customerId) return <p className="text-sm text-slate-500">Loading…</p>;
   if (docs.length === 0) return <p className="text-sm text-slate-500">Nothing printed yet.</p>;
   return (
     <table className="w-full text-sm">

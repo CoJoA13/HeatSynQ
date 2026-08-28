@@ -65,8 +65,9 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   // wiped by the 409 rollback's config reset (conflict).
   const editEpoch = useLatest();
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (isStale: () => boolean) => {
     const d = await api<Detail>(`/api/templates/${templateId}`);
+    if (isStale()) return; // #223 item 3 — a superseded mount payload must not reset the editor
     setDetail(d);
     if (d.draft) {
       setConfig(d.draft.config);
@@ -77,7 +78,15 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
       setConfig(null); // no open draft — nothing to edit (discarded/published elsewhere)
     }
   }, [templateId]);
-  useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
+  // §5.13 — #223 item 3: the mount load had no stale flag (`editEpoch` covers save/rollback
+  // only), so React's documented StrictMode double-invoke could land a second payload over an
+  // edit made between the two — the QuoteDetail class, guarded there after a reproduced flake.
+  // Effect-scoped flag rather than a ticket, since the fetch is keyed by the effect's own dep.
+  useEffect(() => {
+    let stale = false;
+    load(() => stale).catch((e) => { if (!stale) setError((e as Error).message); });
+    return () => { stale = true; };
+  }, [load]);
 
   // The one config mutation entry point handed to every panel: swap the working config for the
   // result of a pure editor function, and mark the draft dirty. Functional setState so rapid edits

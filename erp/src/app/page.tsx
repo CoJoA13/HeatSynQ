@@ -25,6 +25,11 @@ export default function OrdersPage() {
   const { permissions: perms, error: permsError } = usePermissions();
 
   const [rows, setRows] = useState<BoardRow[]>([]);
+  // #223 item 4: distinct from "the array is empty" (the CertList/InvoicingList convention). The
+  // board makes TWO sequential round trips on every visit (saved views, then this load), and
+  // "No orders match these filters." rendered through both — an in-flight first fetch is not a
+  // filter result. Only ever false→true, so it needs no ticket of its own.
+  const [loaded, setLoaded] = useState(false);
   // Lazy initializers (the use-latest.ts precedent): `defaultViewConfig()` only ever needs to run
   // once, on mount. A plain `defaultViewConfig()` call in the render body would recompute it on
   // every render just to throw the result away — `useState` only reads its argument on the FIRST
@@ -108,11 +113,12 @@ export default function OrdersPage() {
     try {
       data = await api<BoardRow[]>(`/api/orders${query ? `?${query}` : ""}`);
     } catch (e) {
-      if (latest.isCurrent(t)) setError((e as Error).message);
+      if (latest.isCurrent(t)) { setError((e as Error).message); setLoaded(true); }
       return;
     }
     if (!latest.isCurrent(t)) return;
     setRows(data);
+    setLoaded(true);
     // Clear on success, ticket-gated like the failure path above (processes/page.tsx precedent —
     // Codex, PR #22): without this, a banner from an earlier failed load stays on screen next to
     // freshly loaded rows, with no way to dismiss it.
@@ -254,6 +260,7 @@ export default function OrdersPage() {
 
       <BoardTable
         rows={rows}
+        loaded={loaded}
         visibleDefs={visibleDefs}
         sort={sort}
         onToggleSort={toggleSort}

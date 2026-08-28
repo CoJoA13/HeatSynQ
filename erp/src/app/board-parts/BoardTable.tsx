@@ -23,6 +23,10 @@ export type BoardRow = {
 
 type Props = {
   rows: BoardRow[];
+  /** #223 item 4: has the first load resolved? The empty-state row must not render before it
+   *  (the board makes two sequential round trips per visit), and "no rows yet" is not "no
+   *  match". Owned by the parent, which owns the fetch. */
+  loaded: boolean;
   visibleDefs: ColumnDef[];
   sort: SortState;
   onToggleSort: (col: ColumnDef) => void;
@@ -58,7 +62,7 @@ function renderCell(row: BoardRow, key: ColumnKey) {
   }
 }
 
-export function BoardTable({ rows, visibleDefs, sort, onToggleSort, onOpenOrder }: Props) {
+export function BoardTable({ rows, loaded, visibleDefs, sort, onToggleSort, onOpenOrder }: Props) {
   function sortArrow(col: ColumnDef): string {
     if (!col.sortKey || sort.sort !== col.sortKey) return "";
     return sort.dir === "asc" ? " ▲" : " ▼";
@@ -78,7 +82,7 @@ export function BoardTable({ rows, visibleDefs, sort, onToggleSort, onOpenOrder 
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && (
+          {rows.length === 0 && loaded && (
             <tr>
               <td colSpan={visibleDefs.length || 1} className="p-4 text-center text-slate-500">
                 No orders match these filters.
