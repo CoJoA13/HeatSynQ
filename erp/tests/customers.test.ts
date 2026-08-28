@@ -49,8 +49,13 @@ describe("customers service", () => {
   });
 
   it("requires both code and name", async () => {
-    await expect(createCustomer({ code: "X" })).rejects.toThrow();
-    await expect(createCustomer({ name: "No code" })).rejects.toThrow();
+    // #233 item 2: a bare `rejects.toThrow()` is satisfied by ANY throw — it passed with the
+    // validation layer deleted, since the raw insert would throw something too. Assert the zod
+    // refusal and the field it names, so only a genuine validation failure satisfies it.
+    await expect(createCustomer({ code: "X" })).rejects.toThrow(ZodError);
+    await expect(createCustomer({ code: "X" })).rejects.toThrow(/name/);
+    await expect(createCustomer({ name: "No code" })).rejects.toThrow(ZodError);
+    await expect(createCustomer({ name: "No code" })).rejects.toThrow(/code/);
   });
 
   it("rejects a whitespace-only code", async () => {

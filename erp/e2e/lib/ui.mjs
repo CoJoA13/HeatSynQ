@@ -10,9 +10,18 @@ import assert from "node:assert/strict";
  */
 export function armDialog(page) {
   return new Promise((resolve) => {
-    page.on("dialog", async (dialog) => {
+    // `page.once`, not `page.on` (#233 item 4): the docstring promised one-shot while the listener
+    // was permanent, so a SECOND dialog re-entered this handler and called accept() on a dialog
+    // Playwright had already handled — an unhandled rejection inside an async listener, which
+    // kills the harness process and skips teardown. A second dialog now meets Playwright's own
+    // auto-dismiss, the documented default, instead of a crash.
+    page.once("dialog", async (dialog) => {
       const message = dialog.message();
-      await dialog.accept();
+      // Guarded: an accept() that rejects inside an async listener is an UNHANDLED rejection,
+      // which kills the harness process outright and skips teardown — the crash mode this
+      // helper's "one-shot" claim was hiding. Resolve either way; the caller asserts on the
+      // message, and a genuinely unhandled dialog surfaces as that assertion failing.
+      await dialog.accept().catch(() => {});
       resolve(message);
     });
   });
@@ -28,9 +37,9 @@ export function armDialog(page) {
  */
 export function armPrompt(page, responseText) {
   return new Promise((resolve) => {
-    page.on("dialog", async (dialog) => {
+    page.once("dialog", async (dialog) => { // one-shot + guarded, exactly as armDialog above
       const message = dialog.message();
-      await dialog.accept(responseText);
+      await dialog.accept(responseText).catch(() => {});
       resolve(message);
     });
   });

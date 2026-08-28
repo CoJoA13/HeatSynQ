@@ -235,7 +235,10 @@ export default function TemplatesPage() {
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                 {docTypeName(docType)}
               </div>
-              <ul className="divide-y rounded border bg-white text-sm">
+              {/* Labelled per document type: a list needs an accessible name, and it gives the
+                  templates-admin flow a per-type scope so its assertions stop counting rows
+                  plant-wide (#234). */}
+              <ul aria-label={docTypeName(docType)} className="divide-y rounded border bg-white text-sm">
                 {templates.length === 0 && (
                   <li className="px-3 py-2 text-slate-400">No templates yet</li>
                 )}

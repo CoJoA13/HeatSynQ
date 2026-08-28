@@ -54,8 +54,16 @@ export async function run(page, shot, ctx) {
   // Archive the actual PDF bytes regardless of the popup outcome — the page's request context shares
   // the logged-in page's cookies, so this GET is authenticated the same way clicking the link would be.
   const docHref = await travelerLink.getAttribute("href");
+  assert.match(docHref ?? "", /^\/api\/documents\/[^/]+$/, "the archived row links to /api/documents/[id]");
   const pdfResp = await page.request.get(new URL(docHref, ctx.baseURL).toString());
-  await fs.writeFile(path.join(flowDir, "traveler.pdf"), await pdfResp.body());
+  // #233 item 3: this GET's response was never checked, so the header's "a working
+  // /api/documents/[id] link, which this flow fetches directly" was a claim the flow did not
+  // verify — a 404 or 500 wrote its error body to traveler.pdf and the flow passed. Assert the
+  // link WORKS, which is what the header promises and the one guarantee both popup branches share.
+  assert.equal(pdfResp.status(), 200, "the archived traveler link serves the stored PDF");
+  const pdfBytes = await pdfResp.body();
+  assert.ok(pdfBytes.subarray(0, 5).toString("latin1") === "%PDF-", "the archived bytes are a PDF");
+  await fs.writeFile(path.join(flowDir, "traveler.pdf"), pdfBytes);
 
   // Edit the order's one load — its aria-label is "Load 1 ..." (splitLoads returns a single
   // qty-70/weight-550 load here; loadNumber is always 1-based).
