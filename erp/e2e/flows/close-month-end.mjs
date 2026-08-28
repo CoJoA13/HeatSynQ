@@ -180,8 +180,10 @@ async function postOpenBatch(page, ctx, batchId) {
   // ui.mjs's listener used to be PERMANENT and this flow arms FOUR dialog sequences on one page
   // (two batch-post confirms, a reopen confirm+prompt, a void prompt) — a lingering registration
   // made the second dialog crash with "Cannot accept dialog which is already handled!". #233 item
-  // 4 made ui.mjs genuinely one-shot, which left that copy a verbatim duplicate justified by a
-  // dead reason, so it is gone.
+  // 4 made ui.mjs genuinely one-shot, which left that copy an exact BEHAVIOURAL duplicate
+  // justified by a dead reason, so it is gone. (Not textually identical: the deleted body read
+  // `dialog.message()` inside `accept().then(...)`; ui.mjs reads it before accepting, which is
+  // the safer order and the same value — `message()` is an initializer snapshot.)
   const confirmed = armDialog(page);
   const posted = page.waitForResponse((res) =>
     new URL(res.url()).pathname === `/api/receivables/batches/${batchId}`

@@ -118,6 +118,14 @@ precedents future flows need, the same spirit as the 5B demo's own harness-bug s
    self-removing `page.once`-based helpers (`armConfirmOnce`, `armReopenDialogs`) instead of reusing
    the shared, single-use-per-flow `armDialog`/`armPrompt` for a flow that needs to arm dialogs more
    than once.
+
+   > **SUPERSEDED 2026-08-28 (#233 item 4).** Read the paragraph above as the record of what was
+   > true on 2026-08-09, not of the harness today. `armDialog`/`armPrompt` are `page.once` now, so
+   > the persistent-listener hazard it describes no longer exists; `armConfirmOnce` was deleted as
+   > an exact behavioural duplicate of `armDialog` and this flow calls the shared helper.
+   > `armReopenDialogs` remains, for the one thing ui.mjs still has no shape for — a single
+   > listener spanning the reopen's back-to-back `confirm()` + `prompt()`. The "THREE separate
+   > dialog sequences" tally was also always off by one: the flow arms four.
 2. **A `<th>` column header shared between two nested tables makes `ancestor::table[1]` resolve to
    BOTH of them.** The receivables batch page nests three tables inside one payment row's expanded
    panel — a Payments-list table, an existing-applications table, and a candidate-invoices grid — and

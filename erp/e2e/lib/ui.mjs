@@ -9,10 +9,12 @@ import assert from "node:assert/strict";
  * kicking in) before the handler exists.
  *
  * The listener self-removes after one dialog (#233 item 4). It did NOT before: this docstring
- * claimed one-shot over a permanent registration, so a second dialog re-entered the handler and
- * tried to accept one Playwright had already handled — a rejection with nothing left to reject,
- * i.e. an unhandled rejection that kills the harness process and skips teardown. A second dialog
- * now meets Playwright's own auto-dismiss, the documented default.
+ * claimed one-shot over a permanent registration, so arming twice on one page left BOTH listeners
+ * live. Node fires them in registration order, so on the next dialog the STALE listener accepted
+ * first and succeeded, and the freshly-armed one then hit "Cannot accept dialog which is already
+ * handled!" — its own promise still pending, but the old body had no reject path, so the throw
+ * escaped the async listener as an unhandled rejection: a harness crash that skips teardown.
+ * A second dialog now meets Playwright's own auto-dismiss, the documented default.
  *
  * A rejection here is BEST-EFFORT, not a reliable flow failure (review round 2). Callers arm,
  * then `await` the triggering click, and only then `await` this promise — but a rejecting
@@ -32,9 +34,11 @@ export function armDialog(page) {
 }
 
 /**
- * Same shape as `armDialog` above, for a `window.prompt(...)` — the reason-capturing dialogs the
- * void/unlock/reopen paths raise (the order hub's void reason was the first, in Task 17; there are
- * many now, so do not read this as naming the only one). `dialog.accept(responseText)` supplies the
+ * Same shape as `armDialog` above, for a `window.prompt(...)`. Its callers are the reason-capturing
+ * dialogs — void, unlock, reopen, quote close — and the app raises non-reason prompts too (the
+ * admin users page's "New password"). The order hub's void reason was the first, in Task 17; this
+ * docstring named it as the app's ONLY prompt() long after that stopped being true, which is the
+ * #233 defect class in this file's own comments. `dialog.accept(responseText)` supplies the
  * typed answer; a bare `accept()` (what `armDialog` calls) would submit prompt()'s empty default,
  * which is indistinguishable from a user who typed nothing — voidOrder's own service rejects that
  * with a 400 ("A reason is required to void an order"), so this needs its own helper rather than
