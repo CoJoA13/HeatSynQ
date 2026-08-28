@@ -13,6 +13,14 @@ import assert from "node:assert/strict";
  * tried to accept one Playwright had already handled — a rejection with nothing left to reject,
  * i.e. an unhandled rejection that kills the harness process and skips teardown. A second dialog
  * now meets Playwright's own auto-dismiss, the documented default.
+ *
+ * A rejection here is BEST-EFFORT, not a reliable flow failure (review round 2). Callers arm,
+ * then `await` the triggering click, and only then `await` this promise — but a rejecting
+ * `accept()` leaves the dialog open, so that click never resolves and the rejection crosses a
+ * microtask checkpoint with no handler attached. The harness registers no `unhandledRejection`
+ * hook, so Node's default applies: a crash that skips teardown. Rejecting still beats resolving
+ * with an unaccepted dialog (which would assert green on a lie), and one-shot makes the trigger
+ * nearly unreachable — but do not read `.catch(reject)` as a guarantee the flow reports this.
  */
 export function armDialog(page) {
   return new Promise((resolve, reject) => {
@@ -24,8 +32,9 @@ export function armDialog(page) {
 }
 
 /**
- * Same shape as `armDialog` above, for a `window.prompt(...)` (Task 17's void-order flow, the
- * only prompt() in the app — order hub's void reason). `dialog.accept(responseText)` supplies the
+ * Same shape as `armDialog` above, for a `window.prompt(...)` — the reason-capturing dialogs the
+ * void/unlock/reopen paths raise (the order hub's void reason was the first, in Task 17; there are
+ * many now, so do not read this as naming the only one). `dialog.accept(responseText)` supplies the
  * typed answer; a bare `accept()` (what `armDialog` calls) would submit prompt()'s empty default,
  * which is indistinguishable from a user who typed nothing — voidOrder's own service rejects that
  * with a 400 ("A reason is required to void an order"), so this needs its own helper rather than

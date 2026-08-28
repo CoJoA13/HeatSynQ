@@ -28,6 +28,11 @@
 // db-fixtures.ts (deleteDocumentTemplatesByName); the seeded Standard templates are only read, and
 // this flow never sets a type DEFAULT.
 //
+// ONE ambient claim remains, deliberately (#234's own fix text sanctions it): each document type's
+// starred default is asserted to be named exactly "Standard", the seeded name. A dev DB whose owner
+// has made their own template the default for some type will red this flow, and `preflight.mjs`
+// does not cover it. That is a narrowed, named residual of what #234 removed, not an oversight.
+//
 // It DOES assign that template to a customer (the Task 20 section below) — the header used to say
 // it never did, a false guarantee corrected with #234. Two things keep that honest: the assignment
 // targets this run's OWN fixture customer, matched by exact code, and it is cleared back to

@@ -43,7 +43,7 @@
 // exists — this flow only ever touches a period it creates itself; see `db-fixtures.ts`'s
 // `deleteClosePeriodFixture` comment for why a broader self-heal sweep is deliberately not built.
 import assert from "node:assert/strict";
-import { armPrompt, waitForValue } from "../lib/ui.mjs";
+import { armDialog, armPrompt, waitForValue } from "../lib/ui.mjs";
 import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const CHECK_AMOUNT = "600.00";
@@ -85,24 +85,6 @@ function periodRow(page, label) {
     .filter({ has: page.locator("span.font-medium", { hasText: label }) });
 }
 
-/**
- * A ONE-SHOT `confirm()` handler. `armDialog` (ui.mjs) is one-shot too since #233 item 4 — before
- * that its listener was permanent, and this helper existed chiefly to avoid it. The history is
- * worth keeping because it is why this flow does not simply reuse ui.mjs: it arms THREE separate
- * dialog sequences on the same `page` (two batch-post confirms, then a reopen confirm+prompt, then
- * a void prompt), and with a permanent listener the FIRST registration stayed live, so the second
- * listener to fire on a later dialog crashed with "Cannot accept dialog which is already handled!"
- * (caught live during this task's own development). Self-removal after firing means each of this
- * flow's three dialog sequences starts with a clean listener set.
- */
-function armConfirmOnce(page) {
-  return new Promise((resolve, reject) => {
-    page.once("dialog", (dialog) => {
-      dialog.accept().then(() => resolve(dialog.message())).catch(reject);
-    });
-  });
-}
-
 /** Reopen (Close.tsx `doReopen`) fires `confirm()` THEN `prompt()` back to back in one click
  *  handler. Both dialogs are caught by a SINGLE persistent `page.on("dialog")` listener, registered
  *  once before the click and removed the instant the prompt is handled.
@@ -115,7 +97,10 @@ function armConfirmOnce(page) {
  *  Measured on CI twice (the `close-month-end` timeout on #196); it passes locally because the race
  *  is timing-sensitive. One persistent listener has no re-registration gap to lose. It is removed
  *  the moment the prompt is handled, so it does not linger to intercept the void-application
- *  `armPrompt` call later in this same flow — the reason this flow avoids `armDialog`/`armPrompt`. */
+ *  `armPrompt` call later in this same flow. That removal is why this helper can coexist with the
+ *  shared ui.mjs helpers, which this flow DOES use (`armDialog` for the batch-post confirms,
+ *  `armPrompt` for the void reason); what ui.mjs has no shape for is one listener spanning TWO
+ *  back-to-back dialogs, which is the only reason this local helper still exists. */
 function armReopenDialogs(page, reason) {
   return new Promise((resolve, reject) => {
     const onDialog = (dialog) => {
@@ -191,7 +176,13 @@ async function postOpenBatch(page, ctx, batchId) {
   const heading = page.getByRole("heading", { name: /^Batch #\d+/ });
   await heading.waitFor({ state: "visible", timeout: 15000 });
   if (await heading.getByText("Posted", { exact: true }).count() > 0) return;
-  const confirmed = armConfirmOnce(page);
+  // `armDialog` (ui.mjs), not a local copy: this flow carried its own `armConfirmOnce` because
+  // ui.mjs's listener used to be PERMANENT and this flow arms FOUR dialog sequences on one page
+  // (two batch-post confirms, a reopen confirm+prompt, a void prompt) — a lingering registration
+  // made the second dialog crash with "Cannot accept dialog which is already handled!". #233 item
+  // 4 made ui.mjs genuinely one-shot, which left that copy a verbatim duplicate justified by a
+  // dead reason, so it is gone.
+  const confirmed = armDialog(page);
   const posted = page.waitForResponse((res) =>
     new URL(res.url()).pathname === `/api/receivables/batches/${batchId}`
     && res.request().method() === "PATCH" && res.ok());
