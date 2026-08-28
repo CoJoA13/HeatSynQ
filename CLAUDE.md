@@ -212,7 +212,14 @@ refuses a newer server, so `runBackupNow` takes an injectable dump command (a pa
 
 ## Working conventions
 
-TDD per task: failing test → implement → pass → commit. Conventional commit messages, with **no attribution trailer on individual commits** — owner's instruction, 2026-08-01. Every branch is squash-merged, so a per-commit `Co-Authored-By` / `Claude-Session` line gets concatenated N times into one squash message. Attribution goes in the **PR body**, where the squash preserves it exactly once. (Commits before 2026-08-01 carry the trailer; that is history, not the convention.)
+TDD per task: failing test → implement → pass → commit. **An assertion about a guard is only
+proven by MUTATION — delete the guard, watch the test red.** Vacuous and overclaiming assertions
+are this repo's most-refiled defect class (#233 was instances 7–10), and they are invisible to a
+green run by definition: a test whose subject 403s for two different reasons, or whose
+`rejects.toThrow()` accepts any throw, passes exactly as loudly with the thing it names deleted.
+The same rule covers COMMENTS that state a guarantee — #233's own three review rounds each fixed a
+false claim and left or introduced another, every one of them found by checking the claim against
+the code that produces it rather than by re-reading the prose. Conventional commit messages, with **no attribution trailer on individual commits** — owner's instruction, 2026-08-01. Every branch is squash-merged, so a per-commit `Co-Authored-By` / `Claude-Session` line gets concatenated N times into one squash message. Attribution goes in the **PR body**, where the squash preserves it exactly once. (Commits before 2026-08-01 carry the trailer; that is history, not the convention.)
 
 **`main` is PROTECTED — everything goes through a PR, including a docs-only close-out.** The rules require a pull request and a passing `ci` check. A privileged account can push straight through, and GitHub then prints `Bypassed rule violations for refs/heads/main` — which is a report of a mistake, not a permission. **Close-outs are the trap**, because the close-out commits from earlier phases sit directly on `main` and read as precedent; they predate the rule. Branch, PR, merge — the same as any other change. If a bypassing push has already landed, **do not force-push `main` to tidy it away**: rewriting a pushed default branch is worse than the violation, and the honest fix is to leave the commit and route the next one properly.
 
