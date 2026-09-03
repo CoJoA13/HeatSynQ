@@ -99,3 +99,18 @@ export function addDays(start: Date, n: number): Date {
   }
   return new Date(start.getTime() + n * DAY_MS);
 }
+
+/**
+ * UTC midnight on the first day of `d`'s own calendar month.
+ *
+ * Built from the UTC year/month rather than by subtracting `getUTCDate() - 1` days, so it cannot
+ * drift the way a `DAY_MS` walk can, and it stays on the `parseDateOnly`/`formatDateOnly`
+ * UTC-midnight convention every `@db.Date` column round-trips. `d` is not mutated.
+ *
+ * The caller this exists for is a date that must not fall out of the month it is derived in:
+ * `prisma/manual-seed.ts` clamps its current-month receipts against this, because a plain
+ * "today minus n days" silently crosses into the prior month when the seed runs early in one.
+ */
+export function startOfMonth(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}

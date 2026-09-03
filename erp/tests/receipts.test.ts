@@ -556,7 +556,14 @@ describe("reopenBatch — POSTED -> OPEN (#68)", () => {
     const invoice = await prisma.invoice.create({
       data: {
         kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
-        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+        // `finalizedAt` is PINNED into the reported month, not `new Date()`. Recognition is on
+        // `finalizedAt` (owner ruling 8), so a clock-valued stamp puts this invoice in whatever
+        // month the suite happens to run in while every other date here — deposit, receipt,
+        // invoice, order — is fixed at 2026-08. That made the roll-forward below see payments
+        // with no invoice behind them from 2026-09-01 onward: `variance` came out -300 and this
+        // test passed only during August 2026.
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300,
+        finalizedAt: parseDateOnly("2026-08-08"),
       },
     });
     await asSystem(() => applyPayment({

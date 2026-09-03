@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addBusinessDays, addDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
+import { addBusinessDays, addDays, formatDateOnly, parseDateOnly, startOfMonth, todayDateOnly } from "@/lib/business-days";
 
 // Pure module, no DB: date-only parsing/formatting and Mon–Fri business-day math over
 // UTC-midnight Dates (matches @db.Date column semantics). The anchor dates below are real,
@@ -124,5 +124,36 @@ describe("addDays", () => {
 
   it("rejects a non-integer n", () => {
     expect(() => addDays(parseDateOnly("2026-08-03"), 1.5)).toThrow();
+  });
+});
+
+describe("startOfMonth", () => {
+  it("floors a mid-month date to the 1st", () => {
+    expect(formatDateOnly(startOfMonth(parseDateOnly("2026-08-19")))).toBe("2026-08-01");
+  });
+
+  it("returns the 1st unchanged", () => {
+    expect(formatDateOnly(startOfMonth(parseDateOnly("2026-09-01")))).toBe("2026-09-01");
+  });
+
+  it("floors the last day of a month to that same month's 1st, never the next one", () => {
+    expect(formatDateOnly(startOfMonth(parseDateOnly("2026-08-31")))).toBe("2026-08-01");
+  });
+
+  it("stays inside January rather than rolling back into the prior year", () => {
+    expect(formatDateOnly(startOfMonth(parseDateOnly("2026-01-14")))).toBe("2026-01-01");
+  });
+
+  it("returns UTC midnight, matching the @db.Date convention", () => {
+    const d = startOfMonth(parseDateOnly("2026-02-17"));
+    expect(d.getUTCHours()).toBe(0);
+    expect(d.getUTCMinutes()).toBe(0);
+    expect(d.getUTCDate()).toBe(1);
+  });
+
+  it("does not mutate its argument", () => {
+    const start = parseDateOnly("2026-08-19");
+    startOfMonth(start);
+    expect(formatDateOnly(start)).toBe("2026-08-19");
   });
 });
