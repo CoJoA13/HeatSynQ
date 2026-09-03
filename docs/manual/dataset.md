@@ -16,6 +16,17 @@ sequence below: it reproduced the aging table figure-for-figure — every bucket
 the 11,334.96 of unapplied cash and the +13,501.35 Net — and August's 1,250.00 variance, which chapter 8
 quotes. The back-dating is relative to the seed date, so the distribution is stable across rebuild dates.
 
+**That stability had a month-boundary hole, fixed 2026-09-03.** "Relative to the seed date" is true of
+the aging, which is what the sentence above was written about — but it was NOT true of the month-end
+close, and the difference only shows near the 1st. The working receipt batch was dated `d(3)`, so a
+rebuild on the 3rd put all four of its payments — and therefore their applications — into the prior
+month, the month the dataset closes. That month may carry only unapplied cash (see "THE PRIOR-MONTH
+CASH" in `manual-seed.ts`), so `monthEnd()` refused with a *"close does not reconcile"* variance and
+the last three steps of the seed never ran. The batch is now dated through `inCurrentMonth`, which
+clamps to the 1st; it only ever moves a date forward, so the aging figures above are unchanged. Both
+verified rebuild dates (the 19th and the 22nd) had enough cushion to hide it, which is why a dataset
+"verified twice" still carried it.
+
 ---
 
 ## Rebuilding it
@@ -41,6 +52,12 @@ Two things about the sequence worth knowing:
   every customer, part and reference code it creates is unique among live rows, so a second run
   against an already-seeded database fails on the first duplicate rather than quietly doubling the
   dataset. There is no reset mode in the script — the reset *is* dropping the database.
+  **`npm run db:reset -- --yes` substitutes for steps 1–3** where dropping is inconvenient (no
+  CREATEDB right, or a tool that refuses the statement): it truncates every table and restores the
+  same baseline, which is the equivalence this document already asserts two sections down. Verified
+  end to end on 2026-09-03 — reset, demo slice, `manual-seed.ts` — against a database that had
+  already carried a full dataset, and the rebuild still came out at order numbers **1000–1049**,
+  because the truncate takes the document-number counters with it.
 - **Step 4 calls `seedDemoSlice`, the unguarded internal orchestration**, because `npm run
   db:seed:demo` runs the practice-guarded entry (`seedPracticeDemo`), which refuses on `erp` by
   design. That guard is correct and was not weakened. There is no npm script for seeding the demo

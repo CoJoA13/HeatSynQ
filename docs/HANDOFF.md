@@ -357,6 +357,41 @@ it now asserts the surviving order line's `quoteLineId` is **null** (verified: `
 `linkedToDead=0`). That is a sharper tripwire than the status code was: RED-verified by downgrading
 `updateQuote` to Read Committed, which makes the save commit WITH a link to the dropped line.
 
+**2026-09-03 — a cold start from a clean checkout found THREE bring-up defects, all fixed.** The
+machine is on **Ubuntu 26.04 again** (kernel 7.0.0-30-generic, `pgdg26.04` packages), so §8's Fedora
+commands and CLAUDE.md's Fedora environment notes are stale for this box a second time — the
+#235 situation, still unactioned and still correct to leave alone until the OS settles. Nothing
+below is app code: two are environment/tooling, one is the manual dataset's seed.
+
+- **The manual dataset could not be rebuilt in the first days of a month** (`prisma/manual-seed.ts`).
+  The receivables working batch was dated `d(3)`, so a rebuild on the 3rd put all four of its
+  payments on the last day of the PRIOR month — the month `monthEnd()` closes, and the one month
+  that may carry nothing but unapplied cash (§"THE PRIOR-MONTH CASH"). The close refused, correctly,
+  with `ending A/R -14696.08 vs aging -7150.00, off by -7546.08`, and the seed's last three steps
+  (`monthEnd`, `templatesAndAssignments`, `finishFirstRun`) never ran — leaving a dataset that looks
+  complete, still signs in as `admin`/`admin`, and has no closed period. **Fixed with a clamp, not a
+  smaller offset** — no fixed `d(n)` is safe on the 1st: new `startOfMonth` in the
+  `business-days.ts` leaf (6 tests) backs a local `inCurrentMonth(daysAgo)` that floors at the 1st.
+  It only ever moves a date FORWARD, so the aging is untouched and the 2% 10 Net 30 discount window
+  still covers the clamped receipt — **verified, not reasoned**: the rebuild put the batch on
+  09-01, took the 50.42 DISCOUNT, and closed August at `Payments 6750.00 / Ending -6750.00 /
+  **Variance 0.00**` with GL export #1000 clean. `d(n)` keeps NO month guarantee and is still right
+  for everything whose only job is to age; the two comment blocks say which is which.
+- **npm ≥ 11.19 silently skipped five dependencies' install scripts**, so a fresh `npm install`
+  exited 0 with no Prisma query engine — the failure then surfaces somewhere unrelated. Fixed the
+  way npm intends: an `allowScripts` block in `package.json` (`npm install-scripts approve --all`),
+  version-pinned, so a dependency bump re-raises the review rather than inheriting it. Proven by
+  deleting `node_modules` and reinstalling clean. CLAUDE.md's constraints list carries the trap and
+  the re-approval step. **`--allow-scripts` on the command line is refused for project-scoped
+  installs** — npm points at this field instead, so there is no per-run escape hatch to reach for.
+- **The host `pg_dump` was major 16 against the Postgres 18.6 server**, which `pg_dump` refuses
+  outright. This is the requirement CLAUDE.md's environment notes and §8 already state; the box
+  simply did not satisfy it. It is not cosmetic: `manual-seed.ts`'s `finishFirstRun` takes a REAL
+  backup through `runBackupNow()` defaults on purpose (the injectable `dumpBin` exists for CI, and
+  using it here would defeat the point), and the E2E `backups` flow spawns the real binary too — so
+  the seed and that flow both fail until `postgresql-client-18` is installed. Client only, never a
+  `*-server` package.
+
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
