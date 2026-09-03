@@ -52,12 +52,28 @@ Two things about the sequence worth knowing:
   every customer, part and reference code it creates is unique among live rows, so a second run
   against an already-seeded database fails on the first duplicate rather than quietly doubling the
   dataset. There is no reset mode in the script — the reset *is* dropping the database.
-  **`npm run db:reset -- --yes` substitutes for steps 1–3** where dropping is inconvenient (no
-  CREATEDB right, or a tool that refuses the statement): it truncates every table and restores the
-  same baseline, which is the equivalence this document already asserts two sections down. Verified
-  end to end on 2026-09-03 — reset, demo slice, `manual-seed.ts` — against a database that had
-  already carried a full dataset, and the rebuild still came out at order numbers **1000–1049**,
-  because the truncate takes the document-number counters with it.
+  **`npm run db:reset -- --yes` substitutes for steps 1 and 3 — NOT step 2** — where dropping is
+  inconvenient (no CREATEDB right, or a tool that refuses the statement). `migrate deploy` stays,
+  and must run FIRST:
+
+  ```bash
+  npx prisma migrate deploy     # NOT optional — db:reset does not migrate
+  npm run db:reset -- --yes     # truncate + singletons + db:seed
+  # ...then steps 4 and 5 unchanged
+  ```
+
+  **`db:reset` never applies a pending migration.** It truncates every public table except
+  `_prisma_migrations`, which it deliberately preserves, and its only schema guard is the
+  never-migrated-at-all case (zero tables). A database that is merely BEHIND the checkout sails
+  past that check, and the failure then lands in the worst possible order: the truncate has already
+  committed when `reseedSingletons` hits the stale schema, so the database is empty AND unusable.
+  Running `migrate deploy` first costs nothing on an up-to-date database and is the whole fix.
+
+  Verified end to end on 2026-09-03 — reset, demo slice, `manual-seed.ts` — against a database that
+  had already carried a full dataset, and the rebuild still came out at order numbers **1000–1049**,
+  because the truncate takes the document-number counters with it. That run's database was already
+  at the migration head, which is exactly why it could not have caught the gap above; the ordering
+  is stated here because the code says so, not because a green run demonstrated it.
 - **Step 4 calls `seedDemoSlice`, the unguarded internal orchestration**, because `npm run
   db:seed:demo` runs the practice-guarded entry (`seedPracticeDemo`), which refuses on `erp` by
   design. That guard is correct and was not weakened. There is no npm script for seeding the demo
