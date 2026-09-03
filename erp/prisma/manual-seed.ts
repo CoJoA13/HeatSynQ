@@ -52,7 +52,7 @@ import { prisma } from "../src/server/db";
 import { runWithContext } from "../src/server/context";
 import { HttpError } from "../src/server/errors";
 import { devDbRefusal, hostFromUrl } from "../src/lib/dev-db-guard";
-import { formatDateOnly, todayDateOnly, addDays } from "../src/lib/business-days";
+import { formatDateOnly, todayDateOnly, addDays, startOfMonth } from "../src/lib/business-days";
 
 import { createReference } from "../src/server/reference";
 import { createStepCode, setStepFields } from "../src/server/process-step-codes";
@@ -202,6 +202,11 @@ const part = async (input: Record<string, unknown>): Promise<string> =>
 //
 // `PRIOR_*` is the month before this one — the month the dataset closes. See the header of the
 // receivables section for why it can only carry CASH.
+//
+// `d(n)` is the plain back-date and carries NO month guarantee — it is right for anything whose
+// only job is to age (invoice dates, received/request dates), which is most of this file. A date
+// that must stay inside the CURRENT month uses `inCurrentMonth` instead: see its docblock, and
+// §"THE PRIOR-MONTH CASH" in the receivables section for what goes wrong when one drifts out.
 // ---------------------------------------------------------------------------------------------
 
 const TODAY = todayDateOnly();
@@ -213,6 +218,27 @@ const PRIOR_MONTH = TODAY.getUTCMonth() === 0 ? 12 : TODAY.getUTCMonth();
 /** A "yyyy-mm-dd" inside the prior month, on its `day`. */
 const inPriorMonth = (day: number): string =>
   `${PRIOR_YEAR}-${String(PRIOR_MONTH).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+/**
+ * `daysAgo` before today, but never earlier than the 1st of the CURRENT month.
+ *
+ * The working receipt batch must land in the current month — its payments are APPLIED, and an
+ * application dated in the prior month breaks the month-end close outright (the roll-forward
+ * subtracts the cash while the aging nets it against an invoice it cannot see; the receivables
+ * header states the full argument). Plain `d(n)` cannot promise that: it silently crosses the
+ * boundary whenever the seed runs within `n` days of the 1st. The batch was dated `d(3)`, so a
+ * rebuild on the 3rd landed all four of its payments on the last day of the month being closed,
+ * and `monthEnd()` refused with a variance of -7546.08. Clamping is the right repair rather than
+ * picking a smaller `n` — no fixed offset is safe on the 1st — and it only ever moves a date
+ * FORWARD, toward today, so the aging as of today is unchanged (every clamped date is still
+ * `<= today`) and the early-pay discount window, which runs from an invoice raised at `d(6)` on
+ * 2% 10 Net 30, still covers it.
+ */
+const inCurrentMonth = (daysAgo: number): string => {
+  const back = addDays(TODAY, -daysAgo);
+  const floor = startOfMonth(TODAY);
+  return formatDateOnly(back < floor ? floor : back);
+};
 
 export async function seedManualDataset(): Promise<void> {
   await assertDevDatabase();
@@ -1606,6 +1632,14 @@ type Invoices = Awaited<ReturnType<typeof invoicing>>;
 // OPEN batch below is dated in the CURRENT month: the roll-forward counts only POSTED payments,
 // while the aging counts ALL of them, so an un-posted payment dated in the prior month would
 // break the same reconciliation from the other side.
+//
+// "CURRENT MONTH" IS A CONSTRAINT, NOT AN ASSUMPTION. The working batch is dated through
+// `inCurrentMonth`, never `d(n)`: a plain back-date lands in the current month only while the
+// seed runs far enough past the 1st, and this file was written and verified mid-month, so the
+// gap went unnoticed until a rebuild on the 3rd put the whole batch — four payments and the
+// three applications drawn from them — into the month being closed, and `monthEnd()` refused.
+// Nothing here may be dated with `d(n)` unless it is genuinely free to land in whatever month
+// that falls in.
 // =============================================================================================
 
 async function receivables(env: Env, cust: Cust, inv: Invoices) {
@@ -1633,28 +1667,31 @@ async function receivables(env: Env, cust: Cust, inv: Invoices) {
   const controlTotal = round2(PARTIAL + cash + shortPay + ON_ACCOUNT);
 
   // --- Batch 1: POSTED, current month, the working batch that pays real invoices.
+  // `inCurrentMonth`, NOT `d` — every payment here is applied below, and an application dated in
+  // the prior month breaks the close. See that helper's docblock and this section's header.
+  const RECEIVED = inCurrentMonth(3);
   const main = await createBatch({
-    depositDate: d(3), controlTotal: controlTotal.toFixed(2),
+    depositDate: RECEIVED, controlTotal: controlTotal.toFixed(2),
     notes: "Lockbox deposit — Thursday run",
   });
 
   // A PARTIAL payment against the 90+ invoice — leaves a balance and keeps it in the bucket.
   await addPayment(main.id, {
     customerId: cust.midst, paymentTypeId: env.ptCheck, amount: PARTIAL.toFixed(2),
-    reference: "CHK 100455", receivedDate: d(3), notes: "Part payment, balance to follow",
+    reference: "CHK 100455", receivedDate: RECEIVED, notes: "Part payment, balance to follow",
   });
   await addPayment(main.id, {
     customerId: cust.titan, paymentTypeId: env.ptAch, amount: cash.toFixed(2),
-    reference: "ACH 8891", receivedDate: d(3), notes: "Paid within terms — 2% taken",
+    reference: "ACH 8891", receivedDate: RECEIVED, notes: "Paid within terms — 2% taken",
   });
   await addPayment(main.id, {
     customerId: cust.valley, paymentTypeId: env.ptCheck, amount: shortPay.toFixed(2),
-    reference: "CHK 20331", receivedDate: d(3), notes: "Short pay — freight dispute",
+    reference: "CHK 20331", receivedDate: RECEIVED, notes: "Short pay — freight dispute",
   });
   // ON-ACCOUNT cash in the current month: a payment with no application at all.
   await addPayment(main.id, {
     customerId: cust.harbor, paymentTypeId: env.ptWire, amount: ON_ACCOUNT.toFixed(2),
-    reference: "WIRE 55210", receivedDate: d(3), notes: "Prepayment — hold on account",
+    reference: "WIRE 55210", receivedDate: RECEIVED, notes: "Prepayment — hold on account",
   });
 
   await postBatch(main.id);
