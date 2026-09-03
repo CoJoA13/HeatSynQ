@@ -357,11 +357,20 @@ it now asserts the surviving order line's `quoteLineId` is **null** (verified: `
 `linkedToDead=0`). That is a sharper tripwire than the status code was: RED-verified by downgrading
 `updateQuote` to Read Committed, which makes the save commit WITH a link to the dropped line.
 
-**2026-09-03 — a cold start from a clean checkout found THREE bring-up defects, all fixed.** The
+**2026-09-03 — a cold start from a clean checkout found FOUR defects, all fixed.** The
 machine is on **Ubuntu 26.04 again** (kernel 7.0.0-30-generic, `pgdg26.04` packages), so §8's Fedora
 commands and CLAUDE.md's Fedora environment notes are stale for this box a second time — the
 #235 situation, still unactioned and still correct to leave alone until the OS settles. Nothing
-below is app code: two are environment/tooling, one is the manual dataset's seed.
+below is app code: two are environment/tooling, two are date-dependent code that had only ever been
+run in the month it was written in. **The pair is the lesson** — the seed and the test failed the
+same way for the same reason, neither was caught by review, and both were invisible until the
+calendar moved. Anything that pins a month and then reads a clock is suspect; grep
+`finalizedAt: new Date()` before trusting a month-scoped assertion.
+
+Setup steps a fresh box still needs, none of them defects, all already documented in §8 and
+`erp/README.md`: a repo-local git identity, `npx playwright install chromium` (the browser cache
+does not travel with a checkout — E2E cannot run without it), `.env` from `.env.example`, a
+`mkdir -p backups`, and `npx prisma generate`.
 
 - **The manual dataset could not be rebuilt in the first days of a month** (`prisma/manual-seed.ts`).
   The receivables working batch was dated `d(3)`, so a rebuild on the 3rd put all four of its
@@ -384,13 +393,26 @@ below is app code: two are environment/tooling, one is the manual dataset's seed
   deleting `node_modules` and reinstalling clean. CLAUDE.md's constraints list carries the trap and
   the re-approval step. **`--allow-scripts` on the command line is refused for project-scoped
   installs** — npm points at this field instead, so there is no per-run escape hatch to reach for.
+- **One vitest case had been green only during August 2026** (`receipts.test.ts`, "makes the month
+  refuse to reconcile until it is re-posted"). It fixes every date it uses at 2026-08 but stamped
+  its invoice `finalizedAt: new Date()`; recognition is on `finalizedAt`, so from 09-01 the invoice
+  was recognized in the month the SUITE ran in while the report still asked about 2026-08 — leaving
+  August holding a payment with no invoice behind it, `variance` -300 against an expected 0.
+  Pre-existing, confirmed by running it at `8a45ea2` with none of this branch present. Pinned to
+  `parseDateOnly("2026-08-08")`, which makes it hermetic; `write-offs.test.ts` solves the same
+  problem the other way, deriving `CURRENT_YEAR`/`CURRENT_MONTH` so both months move together.
+  Either is fine — a month-scoped assertion just may not mix a pinned month with a clock.
 - **The host `pg_dump` was major 16 against the Postgres 18.6 server**, which `pg_dump` refuses
   outright. This is the requirement CLAUDE.md's environment notes and §8 already state; the box
   simply did not satisfy it. It is not cosmetic: `manual-seed.ts`'s `finishFirstRun` takes a REAL
   backup through `runBackupNow()` defaults on purpose (the injectable `dumpBin` exists for CI, and
   using it here would defeat the point), and the E2E `backups` flow spawns the real binary too — so
   the seed and that flow both fail until `postgresql-client-18` is installed. Client only, never a
-  `*-server` package.
+  `*-server` package. **Resolved on the box**: `postgresql-client-18` (18.6, exactly the server's
+  build) installed alongside the 16 client that was already there, and `pg_wrapper` resolves
+  `/usr/bin/pg_dump` to 18.6 — which is the half that actually matters, since the app `spawn`s
+  whatever wins the PATH lookup. Verified `ss -ltnp` still shows only the compose container on
+  `127.0.0.1:5432`, so no host server crept in with it.
 
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
