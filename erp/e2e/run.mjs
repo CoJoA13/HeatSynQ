@@ -260,8 +260,32 @@ async function waitForServer(url, timeoutMs, devServer) {
   }
 }
 
+// `--disable-source-maps`, and the measurements that chose it.
+//
+// The warm-up compiles all 243 routes into ONE `next dev`, and that costs GIGABYTES — this is the
+// suite's largest single resource cost, not a rounding error. Measured on this app (one dev
+// server, routes issued sequentially in warm-up order, RSS sampled per route):
+//
+//     baseline                    9722 MB peak, 119.2 s
+//     --disable-source-maps       8821 MB peak, 107.6 s   <- chosen
+//     --webpack                   8565 MB peak, 279.4 s
+//     --max-old-space-size=3072   9734 MB peak, 120.0 s
+//
+// Three things that table settles, so nobody re-derives them:
+//   * A NODE HEAP CAP DOES NOTHING. `next dev` is Turbopack, whose allocation is native (Rust), so
+//     `--max-old-space-size` governs none of it — 9734 against a 3 GB cap is the whole argument.
+//     Do not "fix" a future memory problem here by capping the heap.
+//   * `--webpack` buys 12% of the memory for 2.3x the wall clock, which would eat the warm-up
+//     budget. Rejected on time, not on principle.
+//   * Source maps are the one cheap win: ~900 MB and ~10% faster. The cost is poorer stack traces
+//     in `e2e-artifacts/dev-server.log`, which is an acceptable trade HERE and only here — a flow
+//     is diagnosed from its `requestfailed` records, screenshots and assertion text, none of which
+//     this touches. It is a flag on the E2E server alone; `npm run dev` is untouched.
+//
+// The peak is dominated by the FIRST page compiled (~4.6 GB — the root layout, shell and shared
+// client graph, not that page specifically); the other 242 routes add ~5 GB between them.
 function startDevServer() {
-  const child = spawn("npx", ["next", "dev", "-p", String(PORT)], {
+  const child = spawn("npx", ["next", "dev", "-p", String(PORT), "--disable-source-maps"], {
     cwd: ERP_ROOT,
     env: { ...process.env, PORT: String(PORT), BACKUP_DIR },
     stdio: ["ignore", "pipe", "pipe"],
@@ -283,6 +307,33 @@ function startDevServer() {
   child.getOutput = () => out;
   child.closeLog = () => new Promise((resolve) => logStream.end(resolve));
   return child;
+}
+
+/**
+ * Resident memory of the dev server, in MB — the whole PROCESS GROUP, not just the `npx` wrapper.
+ *
+ * The wrapper holds ~70 MB while the `next-server` child holding the compiled graph holds
+ * gigabytes, so reading `child.pid` alone would report a number that is not merely imprecise but
+ * actively misleading. `startDevServer` spawns detached, so the group id IS the child's pid, which
+ * is what makes the whole tree addressable in one read.
+ *
+ * Best-effort and never throws: this is a diagnostic line, and no run should fail because `ps`
+ * was unavailable or output something unexpected. Linux-only in practice, which matches every
+ * other assumption in this harness (process groups, SIGTERM, `fuser`).
+ */
+function devServerRssMb(child) {
+  if (!child?.pid) return 0;
+  try {
+    const out = execFileSync("ps", ["-eo", "pgid=,rss="], { encoding: "utf8" });
+    let kb = 0;
+    for (const line of out.split("\n")) {
+      const [pgid, rss] = line.trim().split(/\s+/);
+      if (Number(pgid) === child.pid) kb += Number(rss) || 0;
+    }
+    return Math.round(kb / 1024);
+  } catch {
+    return 0;
+  }
 }
 
 /** Sends SIGTERM to the dev server's whole process group and waits (briefly) for it to actually
@@ -672,6 +723,19 @@ async function main() {
     // shapes are.
     const warmRefusal = warmupRefusal(warm);
     if (warmRefusal) throw new Error(`Refusing to run the flows: ${warmRefusal}. See ${DEV_SERVER_LOG}.`);
+
+    // Report what the warm-up COST in memory, because that is how the next regression gets caught
+    // early instead of by an OOM kill. Reported, deliberately NOT enforced: the number is
+    // legitimately large (the compile is genuinely expensive), it varies with the machine, and a
+    // threshold picked today would either fire on honest runs or sit too high to mean anything.
+    // A line in the log a reviewer can compare across runs is the useful artifact.
+    //
+    // This exists because a real regression hid behind exactly this blind spot: `next@16.3.4`
+    // costs ~800 MB PER API ROUTE where 16.2.12 costs single-digit MB, so the same warm-up that
+    // peaks at 9.7 GB on 16.2.12 blew past 12 GB after 58 of 243 routes — which presented as a
+    // killed CI runner and two dead desktop sessions, none of which named memory as the cause.
+    const devRssMb = devServerRssMb(state.devServer);
+    if (devRssMb) console.log(`  dev server RSS after warm-up: ${devRssMb} MB`);
 
     // handleSIGINT/handleSIGTERM default to true — Playwright would otherwise install its OWN
     // signal handlers that close the browser (and exit) on Ctrl-C, racing installSignalHandlers()
