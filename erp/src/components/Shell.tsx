@@ -173,27 +173,40 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-slate-100">
+      {/* STICK THE INNER WRAPPER, NOT THE <aside>. The aside stays in normal flow and stretches to
+          the full page height (a flex item at the default align-items:stretch), which is what keeps
+          the dark column running the whole way down a long page — the order board runs to several
+          thousand px. Sticking the aside itself would instead end that column at one viewport
+          height, a purely cosmetic regression on every screen taller than the viewport, the manual's
+          captures included. What has to stay put is the LINKS: before this, scrolling the board far
+          enough left the operator with no navigation on screen at all.
+          `max-h-screen overflow-y-auto` is the other half, and is not optional — a pinned rail is
+          clipped at the viewport, so on a short screen (or once the admin group is visible, which
+          roughly doubles the rail) its last entries would be unreachable rather than merely
+          off-screen. Scroll the rail, don't grow it. */}
       <aside className="w-52 shrink-0 bg-slate-900 text-slate-100">
-        <div className="p-4 text-lg font-semibold">Shop ERP</div>
-        <nav className="space-y-1 px-2 text-sm">
-          {visibleNav(me.permissions).map((n) => (
-            <Link key={n.href} href={n.href}
-                  className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
-              {n.label}
-            </Link>
-          ))}
-          {adminEntries.length > 0 && (
-            <>
-              <div className="pt-3 text-xs uppercase text-slate-400">Admin</div>
-              {adminEntries.map((n) => (
-                <Link key={n.href} href={n.href}
-                      className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
-                  {n.label}
-                </Link>
-              ))}
-            </>
-          )}
-        </nav>
+        <div className="sticky top-0 max-h-screen overflow-y-auto">
+          <div className="p-4 text-lg font-semibold">Shop ERP</div>
+          <nav className="space-y-1 px-2 pb-4 text-sm">
+            {visibleNav(me.permissions).map((n) => (
+              <Link key={n.href} href={n.href}
+                    className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
+                {n.label}
+              </Link>
+            ))}
+            {adminEntries.length > 0 && (
+              <>
+                <div className="pt-3 text-xs uppercase text-slate-400">Admin</div>
+                {adminEntries.map((n) => (
+                  <Link key={n.href} href={n.href}
+                        className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
+                    {n.label}
+                  </Link>
+                ))}
+              </>
+            )}
+          </nav>
+        </div>
       </aside>
       <div className="flex flex-1 flex-col">
         <header className="flex items-center gap-4 border-b bg-white px-4 py-2">
