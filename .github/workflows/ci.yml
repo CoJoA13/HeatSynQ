@@ -74,7 +74,7 @@ jobs:
       # renamed. The 16 MB ceiling and the capture scale are pinned separately, from the committed
       # artifact, in tests/manual-artifacts.test.ts.
       #
-      # WHY THIS JOB and not a new one, given `ci` already runs 12+ minutes against a 15-minute
+      # WHY THIS JOB and not a new one, given `ci` already runs 11+ minutes against a 20-minute
       # cap: 0.18 s is 0.02% of that budget and it needs nothing this job does not already have —
       # no database, no Prisma client, no browser, only the checkout and Node. A separate parallel
       # job would cost no wall clock at all, which is the better argument on cost and the worse one
@@ -95,7 +95,7 @@ jobs:
         run: npm run build
 
   # #30: build the production Docker image and prove it boots. A SEPARATE PARALLEL job,
-  # deliberately: the main job runs 12+ minutes against its 15-minute cap, so a serial
+  # deliberately: the main job runs 11+ minutes against its 20-minute cap, so a serial
   # docker-build step risks the timeout, while a parallel job costs no wall clock.
   # No path filter — the image bakes the entire app (its own npm ci + next build), so
   # nearly every change affects it; filtering to Dockerfile-only paths would recreate
@@ -149,7 +149,7 @@ jobs:
   # dataset breakage #167a fixed, because CI had neither the dataset nor the flows.
   #
   # A THIRD SEPARATE PARALLEL job, the `docker` job's precedent: a serial E2E step would blow the main
-  # `ci` job's 15-minute cap (it already runs 12+ minutes against it), and it would fuse two
+  # `ci` job's 20-minute cap (it already runs 11+ minutes against it), and it would fuse two
   # independent gates into one red that says less than either. Unlike `docker`, though, this job is
   # NOT free wall clock — at the timeouts below it is the workflow's critical path, and a PR's checks
   # are done when this job is done. The decision stands anyway, because the alternative on offer was
