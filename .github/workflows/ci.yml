@@ -19,7 +19,15 @@ defaults:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 20, not 15, and the extra five minutes are for the COLD-CACHE run specifically.
+    # `setup-node`'s npm cache is keyed on erp/package-lock.json, so every dependency PR misses it
+    # on its first run: measured 5m02s to install cold against 1m23s warm, while the vitest step
+    # alone is ~8-10m. At 15 the cold path totalled 15m15s and the job cap CANCELLED the test step
+    # — a red X that says nothing about the code, on precisely the PRs whose lockfile changed.
+    # Re-running after a sibling job had populated the cache passed the same commit in 10m56s.
+    # The cap still has to exist (a hung test must not burn an hour), so this buys headroom for the
+    # one slow case rather than removing the bound. Raise it again only with a measurement.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 

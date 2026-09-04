@@ -441,6 +441,28 @@ Two things worth keeping: **a local E2E run wants the rest of the box quiet** �
 since the harness traps SIGTERM and still tore down its dev server and dev-DB fixtures cleanly, both
 times.
 
+**2026-09-03 — the dependency campaign: tier 1 merged (PR #263, `af33c4b`), and two things it
+turned up.** Staged deliberately — safe bumps first, then one major per branch — so a failure is
+isolated to the thing that caused it. Tier 1 took `zod`, `@types/node`, `@types/react-dom`, `tsx`
+and the transitive `fast-uri`/`nanoid` security fixes: **`npm audit` 7 high → 4**. The four that
+remain are `mysql2`, reached only through `prisma`'s own tree; `npm audit fix --force` "fixes" them
+by DOWNGRADING Prisma to 6.19.3, so do not run it.
+
+- **`ci`'s job cap was raised 15 → 20 minutes, and the reason is the npm cache, not slow tests.**
+  `setup-node` keys its cache on `erp/package-lock.json`, so **every dependency PR misses it on the
+  first run**: 5m02s to install cold vs 1m23s warm, against a vitest step of ~8–10m. The cold path
+  totalled 15m15s and the cap CANCELLED the test step — a red X saying nothing about the code, on
+  exactly the PRs that change the lockfile. The same commit passed in 10m56s once a sibling job had
+  populated the cache. A cancelled step reports `cancelled`, not `failure`, which is the same trap
+  §5a already documents for the e2e upload.
+- **ESLint 10 is BLOCKED UPSTREAM — do not retry it, and close Dependabot #259.** It is not a config
+  problem here. ESLint 10 removed `context.getFilename()`, and `eslint-config-next` depends on
+  `eslint-plugin-react`, whose **latest** release (7.37.5) still calls it and declares
+  `peerDependencies.eslint: "^3 || … || ^9.7"`. There is no newer version to override to, so the
+  lint gate cannot run at all: *"Error while loading rule 'react/display-name'"*. Dropping the react
+  plugin is not the workaround — it carries the `react-hooks` rules that `eslint.config.mjs`'s
+  rationale block is written about. Revisit when `eslint-plugin-react` ships v10 support.
+
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
