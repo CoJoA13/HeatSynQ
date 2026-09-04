@@ -441,6 +441,44 @@ Two things worth keeping: **a local E2E run wants the rest of the box quiet** �
 since the harness traps SIGTERM and still tore down its dev server and dev-DB fixtures cleanly, both
 times.
 
+**2026-09-04 — the warm-up memory work: measured properly, `--disable-source-maps` adopted, and the
+16.3.4 diagnosis sharpened to a per-API-route cost.** Every number in the entry above was taken with
+a probe that summed **all** `next-server` processes, and a demo dev server was running alongside —
+so those figures were contaminated and the "16.3.4 vs 16.2.12" pair was not a clean comparison.
+Re-measured against only the PID listening on the probe's own port, one server, sequential requests,
+RSS sampled per route:
+
+| | peak | wall |
+|---|---|---|
+| 16.2.12 baseline | 9722 MB (243/243) | 119.2 s |
+| 16.2.12 `--disable-source-maps` | **8821 MB** | 107.6 s |
+| 16.2.12 `--webpack` | 8565 MB | 279.4 s |
+| 16.2.12 `--max-old-space-size=3072` | 9734 MB | 120.0 s |
+| **16.3.4 baseline** | **12353 MB after only 58 of 243** | — |
+
+**What that changes.** The conclusion (hold Next at 16.2.12) is unchanged and now rests on a clean
+measurement rather than on CI inference alone. The MECHANISM is new and is the useful part: 16.3.4
+costs **~800 MB per API route** — the top per-route jumps are `/api/admin/backups`,
+`/api/admin/billing`, `/api/admin/part-fields/…` at 800–1500 MB each — where 16.2.12's 198 API
+routes cost single-digit MB apiece and the peak is dominated by the FIRST page compiled (~4.6 GB of
+shared graph). So 16.3.4 is not merely "heavier"; it is unusable for `next dev` on this app at all,
+which is worth knowing beyond the E2E suite.
+
+Also settled, so nobody re-derives them: **a Node heap cap is useless here** — Turbopack allocates
+natively, and 9734 MB against a 3 GB cap is the proof — and **`--webpack` costs 2.3× the wall clock
+for 12% of the memory**. `--disable-source-maps` was adopted on the E2E dev server only, and
+`run.mjs` now prints `dev server peak RSS through warm-up` every run (reported, never enforced: the
+number is machine-dependent, so a threshold would fire on honest runs or mean nothing). It is a true
+peak, needing BOTH a 500 ms poll of the process group AND `/proc/<pid>/status`'s `VmHWM` — polling
+has gaps, and `VmHWM` disappears with the transient compile workers `next dev` reaps. An end-only
+sample read 9193 MB where the pair read 9662 MB (Codex review, PR #268). **A full local
+suite then passed 25/25 without killing the machine**, which it had done twice that day.
+
+One unrelated thing this surfaced, left unfixed and worth a ticket: `npx tsc --noEmit` reports 3
+errors **only after a dev server has run**, because `tsconfig` includes `.next/dev/types/**` and
+`src/app/admin/backups/page.tsx` exports a helper (`runControlState`) that Next's generated
+page-export check rejects. CI's `ci` job never starts a dev server, so it has never seen them.
+
 **2026-09-03 — the dependency campaign: tier 1 merged (PR #263, `af33c4b`), and two things it
 turned up.** Staged deliberately — safe bumps first, then one major per branch — so a failure is
 isolated to the thing that caused it. Tier 1 took `zod`, `@types/node`, `@types/react-dom`, `tsx`

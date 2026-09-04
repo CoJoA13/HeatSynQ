@@ -11,7 +11,7 @@
 // teardown (killed harder than a SIGTERM, or a bug) doesn't wedge the next one.
 import { chromium } from "playwright";
 import { execFileSync, spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -260,8 +260,32 @@ async function waitForServer(url, timeoutMs, devServer) {
   }
 }
 
+// `--disable-source-maps`, and the measurements that chose it.
+//
+// The warm-up compiles all 243 routes into ONE `next dev`, and that costs GIGABYTES — this is the
+// suite's largest single resource cost, not a rounding error. Measured on this app (one dev
+// server, routes issued sequentially in warm-up order, RSS sampled per route):
+//
+//     baseline                    9722 MB peak, 119.2 s
+//     --disable-source-maps       8821 MB peak, 107.6 s   <- chosen
+//     --webpack                   8565 MB peak, 279.4 s
+//     --max-old-space-size=3072   9734 MB peak, 120.0 s
+//
+// Three things that table settles, so nobody re-derives them:
+//   * A NODE HEAP CAP DOES NOTHING. `next dev` is Turbopack, whose allocation is native (Rust), so
+//     `--max-old-space-size` governs none of it — 9734 against a 3 GB cap is the whole argument.
+//     Do not "fix" a future memory problem here by capping the heap.
+//   * `--webpack` buys 12% of the memory for 2.3x the wall clock, which would eat the warm-up
+//     budget. Rejected on time, not on principle.
+//   * Source maps are the one cheap win: ~900 MB and ~10% faster. The cost is poorer stack traces
+//     in `e2e-artifacts/dev-server.log`, which is an acceptable trade HERE and only here — a flow
+//     is diagnosed from its `requestfailed` records, screenshots and assertion text, none of which
+//     this touches. It is a flag on the E2E server alone; `npm run dev` is untouched.
+//
+// The peak is dominated by the FIRST page compiled (~4.6 GB — the root layout, shell and shared
+// client graph, not that page specifically); the other 242 routes add ~5 GB between them.
 function startDevServer() {
-  const child = spawn("npx", ["next", "dev", "-p", String(PORT)], {
+  const child = spawn("npx", ["next", "dev", "-p", String(PORT), "--disable-source-maps"], {
     cwd: ERP_ROOT,
     env: { ...process.env, PORT: String(PORT), BACKUP_DIR },
     stdio: ["ignore", "pipe", "pipe"],
@@ -283,6 +307,108 @@ function startDevServer() {
   child.getOutput = () => out;
   child.closeLog = () => new Promise((resolve) => logStream.end(resolve));
   return child;
+}
+
+/**
+ * PEAK resident memory of the dev server, in MB — the whole PROCESS GROUP, not just the `npx`
+ * wrapper, and the high-water mark rather than a sample.
+ *
+ * **Why `VmHWM` and not `ps rss` (Codex review, PR #268).** This started as one `ps` sample taken
+ * after `warmRoutes` resolves, which reports whatever RSS happens to be current at that instant —
+ * so a transient peak during one of the four concurrent compilations, or memory released (or a
+ * worker exited) before the sample, simply would not appear. A diagnostic whose whole job is to
+ * expose memory regressions must not be able to miss the peak it exists to report, and the gap is
+ * real, not theoretical: one probe run recorded a 8821 MB peak against an 8767 MB final reading.
+ * `/proc/<pid>/status`'s `VmHWM` is the kernel's own peak-RSS counter, so it needs no sampling
+ * loop and has no window to miss.
+ *
+ * The wrapper holds ~70 MB while the `next-server` child holding the compiled graph holds
+ * gigabytes, so reading `child.pid` alone would be actively misleading, not merely imprecise.
+ * `startDevServer` spawns detached, so the group id IS the child's pid — which is what makes the
+ * whole tree addressable.
+ *
+ * Summing per-process high-water marks is deliberately an UPPER bound on the group's simultaneous
+ * peak: two processes may have peaked at different moments. That is the right direction for a
+ * regression tripwire, and in practice one process dominates so completely that the distinction is
+ * academic here.
+ *
+ * **But VmHWM alone is NOT sufficient, which is why the caller also samples.** A process that has
+ * already exited is gone from `/proc` and contributes nothing, and `next dev` spawns transient
+ * compile workers that do exactly that. Measured while warming 50 routes: a sampling loop saw
+ * 8087 MB, while VmHWM read afterwards reported 8001 MB — the difference being a worker that had
+ * come and gone. So this covers peaks a sampler's gaps would miss, the sampler covers processes
+ * this can no longer see, and `devServerMemoryMeter` reports the larger of the two. Neither half
+ * is redundant.
+ *
+ * Best-effort and never throws: no run should fail because `ps` or `/proc` was unavailable, in
+ * which case the caller simply prints no line. Linux-only, matching every other assumption in this
+ * harness (process groups, SIGTERM, `fuser`).
+ */
+function devServerPeakRssMb(child) {
+  if (!child?.pid) return 0;
+  try {
+    const out = execFileSync("ps", ["-eo", "pgid=,pid="], { encoding: "utf8" });
+    let kb = 0;
+    for (const line of out.split("\n")) {
+      const [pgid, pid] = line.trim().split(/\s+/);
+      if (Number(pgid) !== child.pid || !pid) continue;
+      try {
+        // VmHWM — the kernel's own peak-RSS counter for the process, not a sample.
+        const status = readFileSync(`/proc/${pid}/status`, "utf8");
+        kb += Number(status.match(/^VmHWM:\s+(\d+) kB$/m)?.[1] ?? 0);
+      } catch {
+        // This PID vanished between the `ps` listing and the read. That is the EXPECTED case here,
+        // not an anomaly — the transient compile workers are the whole reason this function is
+        // paired with a sampler — so it must skip the dead process and keep every reading already
+        // collected. Letting it reach the outer catch would return 0 and discard the long-lived
+        // server's high-water mark, which is the one figure that actually matters.
+      }
+    }
+    return Math.round(kb / 1024);
+  } catch {
+    return 0;
+  }
+}
+
+/** Instantaneous resident memory of the dev server's process group, in MB. The sampler's half of
+ *  `devServerMemoryMeter` — it sees transient workers that `VmHWM` loses when they exit. */
+function devServerRssMb(child) {
+  if (!child?.pid) return 0;
+  try {
+    const out = execFileSync("ps", ["-eo", "pgid=,rss="], { encoding: "utf8" });
+    let kb = 0;
+    for (const line of out.split("\n")) {
+      const [pgid, rss] = line.trim().split(/\s+/);
+      if (Number(pgid) === child.pid) kb += Number(rss) || 0;
+    }
+    return Math.round(kb / 1024);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Watches the dev server's memory across a phase and reports the peak, combining BOTH readings for
+ * the reason in `devServerPeakRssMb`'s docblock: polling catches processes that exit before the
+ * end, `VmHWM` catches spikes between polls. `stop()` returns the larger.
+ *
+ * Diagnostic only — it never throws and never fails a run. The interval is `unref`d so it can
+ * never hold the process open, and 500 ms costs two small reads against a phase that runs for
+ * tens of seconds.
+ */
+function devServerMemoryMeter(child) {
+  let peak = 0;
+  const sample = () => { const mb = devServerRssMb(child); if (mb > peak) peak = mb; };
+  sample();
+  const timer = setInterval(sample, 500);
+  timer.unref?.();
+  return {
+    stop() {
+      clearInterval(timer);
+      sample();
+      return Math.max(peak, devServerPeakRssMb(child));
+    },
+  };
 }
 
 /** Sends SIGTERM to the dev server's whole process group and waits (briefly) for it to actually
@@ -665,7 +791,27 @@ async function main() {
     // carried. See e2e/lib/warmup.mjs for how the route set is derived (from the filesystem,
     // never a hand-list) and why every request is a cookie-less GET.
     console.log("Warming every route so no flow pays for a cold compile...");
+    const memory = devServerMemoryMeter(state.devServer);
     const warm = await warmRoutes(BASE_URL, APP_DIR, { log: (line) => console.log(line) });
+    const devPeakMb = memory.stop();
+    // Report what the warm-up COST in memory, because that is how the next regression gets caught
+    // early instead of by an OOM kill. Reported, deliberately NOT enforced: the number is
+    // legitimately large (the compile is genuinely expensive), it varies with the machine, and a
+    // threshold picked today would either fire on honest runs or sit too high to mean anything.
+    // A line in the log a reviewer can compare across runs is the useful artifact.
+    //
+    // PRINTED BEFORE THE REFUSAL BELOW, deliberately. A warm-up that blows its budget or fails
+    // most of its requests is the likeliest shape of a memory problem — the dev server thrashing,
+    // stalling or being OOM-killed — so throwing first would withhold this number in exactly the
+    // runs that need it. The refusal points at dev-server.log, which carries the CHILD's output
+    // and never this harness-side measurement, so it is no substitute.
+    //
+    // This exists because a real regression hid behind exactly this blind spot: a Next bump made
+    // every API route cost hundreds of MB where the previous version cost single digits, and it
+    // presented as a killed CI runner and two dead desktop sessions, none of which named memory
+    // as the cause. HANDOFF §4 (2026-09-04) carries the measurements.
+    if (devPeakMb) console.log(`  dev server peak RSS through warm-up: ${devPeakMb} MB`);
+
     // The warm-up's failure signal used to be computed and thrown away: a dev server that died
     // right after `waitForServer` produced 243 "not fatal" lines and then 25 flow failures with no
     // named cause. A handful of slow routes is still not fatal — see warmupRefusal for which three
