@@ -60,6 +60,26 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-04 — TWO NAV-RAIL DEFECTS FIXED, both invisible to every review that had run.** (1) The
+`<aside>` had no `sticky` and no `overflow`, so scrolling the order board — several thousand px tall —
+left the operator with no navigation on screen at all. The fix sticks the INNER wrapper, not the
+aside: the aside stays in flow and keeps stretching full height (verified — the rail column is
+slate-900 at every height down to y=3189 of the 3194px `home.png`), so the dark column and every
+manual capture are unchanged, while `sticky top-0 max-h-screen overflow-y-auto` pins and scrolls the
+links. Do not "simplify" this by moving `sticky` onto the aside. (2) `/setup` had NO nav entry, and
+`SetupBanner` surfaces it only while `!complete && !dismissed` with the dismissal PERMANENT — so a
+dismissed checklist made the page reachable by typed URL only. That stranded a real action, not a
+summary: the "Confirm starting document numbers" button in `SetupChecklist.tsx` is the ONLY writer of
+`numbersConfirmedAt` anywhere in the app, so that step could never be completed again. Added as an
+admin-group entry gated on the `admin` AREA (what `/api/setup/readiness|state` actually enforce) —
+the §5.15 silent-dead-end rule the Templates and Backups entries are both already shaped by, missed
+here because the entry simply did not exist. **Neither defect was in #239's screen-polish backlog,
+and the 2026-08-25 audit's four screenshot reviewers could not have caught either** — one needs
+scrolling, the other needs traversing links to find a page nothing points at. Gates on the branch:
+**3743 tests / 219 files**, `tsc`/`eslint`/`build` clean, E2E **25/25 PASS** (no retries), manual
+re-captured against a rebuilt demonstration dataset (sweep clean) and `manual.html` rebuilt
+deterministically at 11.93 MB. Manual ch12 gained a **Setup** section; README's contents row updated.
+
 **2026-08-25 — THE MACHINE MOVED TO UBUNTU 26.04, a full-codebase audit ran, and its four
 worst findings are FIXED (merged `30dcf6c`, PR #240, squash).** The Fedora desktop was replaced;
 standing the build up needed `npm install` + `.env` + `prisma generate`, the docker group

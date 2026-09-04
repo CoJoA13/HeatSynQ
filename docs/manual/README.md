@@ -25,7 +25,7 @@ it gets certified, it gets billed, the money comes in — rather than the order 
 | 9 | [Customers](09-customers.md) | Customers and divisions, addresses, contacts, terms, credit hold |
 | 10 | [Parts and processes](10-parts-and-processes.md) | Memorized parts, the recipe, prices, specifications, inspections |
 | 11 | [Reports](11-reports.md) | Backlog, shipped, turnaround, sales, payments, the comparison scoreboard |
-| 12 | [Administration](12-administration.md) | Users, roles and permissions, reference data, settings, billing, surcharges, audit log, backups |
+| 12 | [Administration](12-administration.md) | Users, roles and permissions, reference data, settings, billing, surcharges, the setup checklist, audit log, backups |
 | 13 | [Document templates](13-templates.md) | Designing the paper: what can be changed, what is locked, publishing |
 | 14 | [The practice copy](14-practice-copy.md) | Training without touching real data, and resetting it |
 
