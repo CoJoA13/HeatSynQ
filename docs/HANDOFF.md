@@ -414,25 +414,32 @@ does not travel with a checkout — E2E cannot run without it), `.env` from `.en
   whatever wins the PATH lookup. Verified `ss -ltnp` still shows only the compose container on
   `127.0.0.1:5432`, so no host server crept in with it.
 
-**2026-09-03 — `npm run test:e2e` can OOM a 30 GB dev box, and it is NOT a Next version
-regression.** The warm-up compiles all 243 routes in ONE `next dev`, and dev-mode compilation of
-that many routes costs many gigabytes. Twice in one session the kernel killed `next-server` at
-**anon-rss 26.9 GB** (`journalctl -k`: *"Out of memory: Killed process … (next-server)"*), taking
-the whole desktop session with it, both times during the warm-up.
+**2026-09-03 — the E2E warm-up is memory-critical, and `next@16.3.4` pushes it over the edge on a
+16 GB CI runner. Next is HELD at 16.2.12.** The warm-up compiles all 243 routes in ONE `next dev`,
+and dev-mode compilation of that many routes costs gigabytes on any version — this is the
+constraint to design around, not a bug to wait out.
 
-**The obvious hypothesis was wrong and is recorded so nobody re-chases it.** The crashes began
-right after the `16.2.12 → 16.3.4` bump, which looks damning. A bounded probe — one `next dev`, the
-same routes hit in the same order, RSS sampled every 2s, hard-killed at a ceiling — measured
-**16.3.4 peaking at 9.0 GB by route ~35 and 16.2.12 at 7.9 GB by route 32**, i.e. 16.2.12 is if
-anything *worse*. The bump is exonerated; the suite is simply close to this machine's ceiling, and
-the same run had passed twice earlier the same day (12m16s, 25/25). What tips it over is other
-memory in play — the OOM report names `claude-desktop` as the allocator that invoked the killer.
+The evidence, in the order it arrived, because the middle step was wrong:
 
-Practical consequences: **CI is the reliable E2E gate**, having its own runner and its own memory
-(the `e2e` job passed on both PR #262 and this work); a local run wants the rest of the box quiet;
-and a mid-run desktop crash is survivable — the harness traps SIGTERM and still tears down its dev
-server and dev-DB fixtures, which it did cleanly both times. **Do not "fix" this by pinning Next
-back.**
+- Two desktop OOMs in one session, both during the warm-up, kernel naming `next-server` at
+  **anon-rss 26.9 GB** on a 30 GB box (`journalctl -k`).
+- A bounded local probe (one `next dev`, same routes, same order, RSS sampled every 2s, hard-killed
+  at a ceiling) measured **16.3.4 at 9.0 GB peak and 16.2.12 at 7.9 GB**. This was first read as
+  exonerating the bump. **That reading was wrong** — 9.0 > 7.9; 16.3.4 is ~14% HUNGRIER, and the
+  local numbers were only ever a coarse 2s-sampled peak, too noisy to acquit anything.
+- CI settled it. `ubuntu-latest` is **16 GB**, and the `e2e` job **passed on 16.2.12** (PR #262,
+  12m16s, 25/25) then **killed the runner on 16.3.4** (PR #263, exit 143 + *"The runner has
+  received a shutdown signal"*, ~70s into the warm-up). Same suite, same runner class, one variable.
+
+So the bump is NOT exonerated: at 7.9 GB the warm-up fits in 16 GB alongside Postgres and
+Playwright, and at 9.0 GB it does not. **`next` and `eslint-config-next` stay at 16.2.12** and the
+16.3.4 upgrade is its own problem to solve (a warm-up that compiles in batches, or a heap cap, would
+attack the real constraint rather than the version).
+
+Two things worth keeping: **a local E2E run wants the rest of the box quiet** — the OOM report names
+`claude-desktop` as the allocator that invoked the killer — and **a mid-run kill is survivable**,
+since the harness traps SIGTERM and still tore down its dev server and dev-DB fixtures cleanly, both
+times.
 
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
