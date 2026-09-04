@@ -441,6 +441,67 @@ Two things worth keeping: **a local E2E run wants the rest of the box quiet** �
 since the harness traps SIGTERM and still tore down its dev server and dev-DB fixtures cleanly, both
 times.
 
+**2026-09-03 — the dependency campaign: tier 1 merged (PR #263, `af33c4b`), and two things it
+turned up.** Staged deliberately — safe bumps first, then one major per branch — so a failure is
+isolated to the thing that caused it. Tier 1 took `zod`, `@types/node`, `@types/react-dom`, `tsx`
+and the transitive `fast-uri`/`nanoid` security fixes: **`npm audit` 7 high → 4**. The four that
+remain are `mysql2`, reached only through `prisma`'s own tree; `npm audit fix --force` "fixes" them
+by DOWNGRADING Prisma to 6.19.3, so do not run it.
+
+- **`ci`'s job cap was raised 15 → 20 minutes, and the reason is the npm cache, not slow tests.**
+  `setup-node` keys its cache on `erp/package-lock.json`, so **every dependency PR misses it on the
+  first run**: 5m02s to install cold vs 1m23s warm, against a vitest step of ~8–10m. The cold path
+  totalled 15m15s and the cap CANCELLED the test step — a red X saying nothing about the code, on
+  exactly the PRs that change the lockfile. The same commit passed in 10m56s once a sibling job had
+  populated the cache. A cancelled step reports `cancelled`, not `failure`, which is the same trap
+  §5a already documents for the e2e upload.
+- **ESLint 10 is BLOCKED UPSTREAM — do not retry it, and close Dependabot #259.** It is not a config
+  problem here. ESLint 10 removed `context.getFilename()`, and `eslint-config-next` depends on
+  `eslint-plugin-react`, whose **latest** release (7.37.5) still calls it and declares
+  `peerDependencies.eslint: "^3 || … || ^9.7"`. There is no newer version to override to, so the
+  lint gate cannot run at all: *"Error while loading rule 'react/display-name'"*. Dropping the react
+  plugin is not the workaround — it carries the `react-hooks` rules that `eslint.config.mjs`'s
+  rationale block is written about. Revisit when `eslint-plugin-react` ships v10 support.
+- **Prisma stays at 7.9.1. Prisma 8 does not exist as an installable set, and 7.10.0 breaks the #40
+  P2002 field extraction.** Two separate findings, both measured:
+  - **8.0.0-rc.12 is CLI-only.** `prisma` publishes it as `latest`, but `@prisma/client` and
+    `@prisma/adapter-pg` have no 8.0.0 release at all — their only 8.x builds are `8.1.0-dev.*`
+    nightlies. `npm install` refuses outright (`ETARGET`, no matching version for
+    `@prisma/adapter-pg@8.0.0-rc.12`), and a CLI/client mismatch is something Prisma rejects. Note
+    `npm outdated` therefore reports "Latest 8.0.0-rc.12" for a version you cannot adopt; the
+    stable release is on the `prev` tag.
+  - **7.10.0 changes the P2002 payload and degrades every unique-violation message.** Measured on
+    this stack: the adapter now reports `constraint: { index: "Role_name_key" }` where 7.9.1 gave
+    `constraint: { fields: ["name"] }`. The column names are simply gone, so
+    `uniqueConflictFields` falls through to its "value" fallback and *"A role with that **name**
+    already exists"* becomes *"...with that **value** already exists"*. `tests/db-errors.test.ts`
+    catches it — 2 failures, and they are the two assertions written for exactly this (#40).
+    **Recovering the fields by parsing the index name is not viable**: 58 `@@unique` declarations,
+    many composite, so `CertReading_requirementId_position_key` cannot be split without knowing the
+    schema. A real fix is a Postgres catalog lookup in the error path or a generated
+    index→fields map — a design decision, not a dependency bump. Since 7.10.0 brings no offsetting
+    benefit here (it does NOT resolve the `mysql2` advisories — still 3.15.3), the bump was
+    declined rather than papered over by relaxing the tests.
+- **TypeScript stays at 5.9.3 — but the APPLICATION CODE is already TS 7 clean, which is the part
+  worth remembering.** `tsc --noEmit` under 7.0.2 produced **25 errors in exactly one file**
+  (`tests/audit-children.test.ts`) and **zero everywhere else** — every route, service, component
+  and other test compiles. The blockers are both external:
+  - **`typescript-eslint` refuses TS 7 outright** — not a warning, an explicit
+    `Error: typescript-eslint does not support TS 7.0.` thrown at require time, so `eslint` exits 2
+    and the lint gate cannot run. Its latest (8.69.0, no v9 line exists) pins
+    `typescript: ">=4.8.4 <6.1.0"`, so there is nothing to upgrade or override to.
+  - **TS 7 moved the Compiler API out of the package root.** The `"."` export is now
+    `./lib/version.cjs` — the version string and nothing else — with the real API relocated to
+    explicitly-named `unstable/` subpaths (`typescript/unstable/ast`, `.../ast/is`,
+    `.../sync`). So `import ts from "typescript"` yields a module with no `createSourceFile`,
+    no `forEachChild`, no `isCallExpression`. That is what breaks `audit-children.test.ts`, and it
+    breaks it at RUNTIME as well as at typecheck — the #188 parsed census stops enforcing
+    anything. Porting it is a real piece of work against an API whose own name says unstable, and
+    it must not be swapped back to regex: #188 removed the regex deliberately.
+
+  **When the ecosystem catches up, budget for the sweep-test port and little else.** Re-measure
+  with `npx tsc --noEmit` before assuming that is still true.
+
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
