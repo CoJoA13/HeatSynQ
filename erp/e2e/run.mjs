@@ -352,9 +352,17 @@ function devServerPeakRssMb(child) {
     for (const line of out.split("\n")) {
       const [pgid, pid] = line.trim().split(/\s+/);
       if (Number(pgid) !== child.pid || !pid) continue;
-      // VmHWM — the kernel's own peak-RSS counter for the process, not a sample.
-      const status = readFileSync(`/proc/${pid}/status`, "utf8");
-      kb += Number(status.match(/^VmHWM:\s+(\d+) kB$/m)?.[1] ?? 0);
+      try {
+        // VmHWM — the kernel's own peak-RSS counter for the process, not a sample.
+        const status = readFileSync(`/proc/${pid}/status`, "utf8");
+        kb += Number(status.match(/^VmHWM:\s+(\d+) kB$/m)?.[1] ?? 0);
+      } catch {
+        // This PID vanished between the `ps` listing and the read. That is the EXPECTED case here,
+        // not an anomaly — the transient compile workers are the whole reason this function is
+        // paired with a sampler — so it must skip the dead process and keep every reading already
+        // collected. Letting it reach the outer catch would return 0 and discard the long-lived
+        // server's high-water mark, which is the one figure that actually matters.
+      }
     }
     return Math.round(kb / 1024);
   } catch {
@@ -786,24 +794,30 @@ async function main() {
     const memory = devServerMemoryMeter(state.devServer);
     const warm = await warmRoutes(BASE_URL, APP_DIR, { log: (line) => console.log(line) });
     const devPeakMb = memory.stop();
-    // The warm-up's failure signal used to be computed and thrown away: a dev server that died
-    // right after `waitForServer` produced 243 "not fatal" lines and then 25 flow failures with no
-    // named cause. A handful of slow routes is still not fatal — see warmupRefusal for which three
-    // shapes are.
-    const warmRefusal = warmupRefusal(warm);
-    if (warmRefusal) throw new Error(`Refusing to run the flows: ${warmRefusal}. See ${DEV_SERVER_LOG}.`);
-
     // Report what the warm-up COST in memory, because that is how the next regression gets caught
     // early instead of by an OOM kill. Reported, deliberately NOT enforced: the number is
     // legitimately large (the compile is genuinely expensive), it varies with the machine, and a
     // threshold picked today would either fire on honest runs or sit too high to mean anything.
     // A line in the log a reviewer can compare across runs is the useful artifact.
     //
-    // This exists because a real regression hid behind exactly this blind spot: `next@16.3.4`
-    // costs ~800 MB PER API ROUTE where 16.2.12 costs single-digit MB, so the same warm-up that
-    // peaks at 9.7 GB on 16.2.12 blew past 12 GB after 58 of 243 routes — which presented as a
-    // killed CI runner and two dead desktop sessions, none of which named memory as the cause.
+    // PRINTED BEFORE THE REFUSAL BELOW, deliberately. A warm-up that blows its budget or fails
+    // most of its requests is the likeliest shape of a memory problem — the dev server thrashing,
+    // stalling or being OOM-killed — so throwing first would withhold this number in exactly the
+    // runs that need it. The refusal points at dev-server.log, which carries the CHILD's output
+    // and never this harness-side measurement, so it is no substitute.
+    //
+    // This exists because a real regression hid behind exactly this blind spot: a Next bump made
+    // every API route cost hundreds of MB where the previous version cost single digits, and it
+    // presented as a killed CI runner and two dead desktop sessions, none of which named memory
+    // as the cause. HANDOFF §4 (2026-09-04) carries the measurements.
     if (devPeakMb) console.log(`  dev server peak RSS through warm-up: ${devPeakMb} MB`);
+
+    // The warm-up's failure signal used to be computed and thrown away: a dev server that died
+    // right after `waitForServer` produced 243 "not fatal" lines and then 25 flow failures with no
+    // named cause. A handful of slow routes is still not fatal — see warmupRefusal for which three
+    // shapes are.
+    const warmRefusal = warmupRefusal(warm);
+    if (warmRefusal) throw new Error(`Refusing to run the flows: ${warmRefusal}. See ${DEV_SERVER_LOG}.`);
 
     // handleSIGINT/handleSIGTERM default to true — Playwright would otherwise install its OWN
     // signal handlers that close the browser (and exit) on Ctrl-C, racing installSignalHandlers()
