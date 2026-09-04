@@ -69,4 +69,33 @@ describe("nav gating", () => {
   it("hides Backups while permissions are still loading", () => {
     expect(visibleAdmin(undefined).map((n) => n.href)).not.toContain("/admin/backups");
   });
+
+  // The Setup entry closes a genuine silent dead-end rather than adding a convenience link.
+  // SetupBanner renders the checklist only while `!complete && !dismissed`, and the dismissal is
+  // PERMANENT (SetupState.checklistDismissedAt) — so before this entry existed, an admin who
+  // dismissed the checklist with setup still incomplete could reach /setup only by typing the URL.
+  // That is the same §5.15 rule the Templates and Backups entries above are shaped by, so it is
+  // pinned the same way. Gated on the `admin` AREA because that is what the page's own APIs
+  // enforce: /api/setup/readiness does mustCan(..., "admin", "view") and /api/setup/state does
+  // mustCan(..., "admin", "edit") — the nav must not advertise a page the caller would be 403ed by.
+  it("the Setup admin entry points at /setup and is gated on the admin area", () => {
+    const setup = ADMIN.find((e) => e.label === "Setup");
+    expect(setup).toEqual({ label: "Setup", href: "/setup", area: "admin" });
+  });
+
+  it("shows Setup to an admin.view user — /setup is reachable once the checklist is dismissed", () => {
+    expect(visibleAdmin(["admin.view"]).map((n) => n.href)).toContain("/setup");
+  });
+
+  it("hides Setup from a non-admin, and while permissions are still loading", () => {
+    // templates.view reaches the Admin group but must NOT reach /setup — a different area, the
+    // same discrimination the Templates/Backups cases above assert in the other direction.
+    expect(visibleAdmin(["templates.view"]).map((n) => n.href)).not.toContain("/setup");
+    expect(visibleAdmin(["orders.view"]).map((n) => n.href)).not.toContain("/setup");
+    expect(visibleAdmin(undefined).map((n) => n.href)).not.toContain("/setup");
+  });
+
+  it("Setup is an admin-group entry, NOT a top-level nav entry", () => {
+    expect(NAV.map((e) => e.label)).not.toContain("Setup");
+  });
 });

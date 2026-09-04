@@ -256,6 +256,29 @@ customer can be given a reduced rate, a flat amount, or opted out entirely. The 
 appear on this screen is when a delete is refused because customers hold overrides against it; the
 panel then offers **Clear override** per customer so you can unpick them.
 
+## Setup
+
+![The setup checklist](img/setup.png)
+
+The first-run checklist. It lists the eight things a new installation needs configured, ticks each
+one off as it becomes true, and strikes through the ones that are done.
+
+Most of the list is checked by simply doing the work elsewhere in this chapter — the admin password,
+company identity, the chart of accounts, step codes and surcharges, the reference tables, and your
+first customers and parts. Two of them gate order entry: **you cannot enter an order until company
+identity and a chart of accounts are configured**, and until then the New Order screen says so and
+links here instead of showing the form.
+
+**Confirm starting document numbers** is the one step with no other home. You set the numbers
+themselves on the Settings page — where each series begins, so that the first order, invoice and
+shipper carry on from whatever the shop used before rather than starting at 1 — but the **Confirm**
+button that ticks the step off is on this screen and nowhere else.
+
+While anything is outstanding, a banner sits across the top of every screen offering **Finish
+setup**. **Dismiss** puts that banner away permanently — and that is why this page has its own entry
+in the rail. Without one, dismissing the banner would leave the checklist, and the Confirm button
+above with it, reachable only by typing the address.
+
 ## The audit log
 
 ![The audit log](img/admin-audit.png)

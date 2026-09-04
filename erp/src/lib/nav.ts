@@ -43,9 +43,11 @@ export const NAV: NavEntry[] = [
   { label: "Reports", href: "/reports", area: "reports" },
 ];
 
-// Every entry gated on `admin.view` EXCEPT Templates, which gates on its own `templates` area —
-// see the nav-decision note above. Order is cosmetic; Templates sits with the other configuration
-// surfaces.
+// Gated on `admin.view` except the two entries that carry their own gate and say so at the code:
+// Templates (`templates` area) and Backups (the `manage_backups` action) — see the nav-decision
+// note above. Order is cosmetic, and clusters people → configuration → system. Setup is the one
+// entry whose href is not under /admin/ (the page lives at /setup); it is in this group because
+// `admin` is what gates it, not because of where it sits in the route tree.
 export const ADMIN: NavEntry[] = [
   { label: "Users", href: "/admin/users", area: "admin" },
   { label: "Roles", href: "/admin/roles", area: "admin" },
@@ -56,6 +58,17 @@ export const ADMIN: NavEntry[] = [
   { label: "Billing", href: "/admin/billing", area: "admin" },
   { label: "Surcharges", href: "/admin/surcharges", area: "admin" },
   { label: "Templates", href: "/admin/templates", area: "templates" },
+  // The first-run checklist screen. It is in the nav because it would otherwise be UNREACHABLE:
+  // SetupBanner surfaces it only while `!complete && !dismissed`, and the dismissal is permanent
+  // (SetupState.checklistDismissedAt), so an admin who dismisses the checklist with setup still
+  // incomplete had no link to /setup at all — the §5.15 silent-dead-end the Templates and Backups
+  // entries above are both shaped by, reached here through an entry that simply did not exist.
+  // That stranded a real ACTION, not just a summary: the "Confirm starting document numbers"
+  // button in SetupChecklist.tsx is the only writer of `numbersConfirmedAt` anywhere in the app,
+  // so with the banner dismissed that step could never be completed again.
+  // Gated on the `admin` AREA, which is what the page's own APIs enforce (readiness → admin.view,
+  // state → admin.edit), so the nav never advertises a page the caller would be 403ed by.
+  { label: "Setup", href: "/setup", area: "admin" },
   { label: "Audit log", href: "/admin/audit", area: "admin" },
   // Gated on the `manage_backups` ACTION rather than an area — backups are not one of the 12
   // permission areas, and gating this on `admin.view` would leave a manage_backups-only user able
