@@ -467,8 +467,11 @@ which is worth knowing beyond the E2E suite.
 Also settled, so nobody re-derives them: **a Node heap cap is useless here** — Turbopack allocates
 natively, and 9734 MB against a 3 GB cap is the proof — and **`--webpack` costs 2.3× the wall clock
 for 12% of the memory**. `--disable-source-maps` was adopted on the E2E dev server only, and
-`run.mjs` now prints `dev server RSS after warm-up` every run (reported, never enforced: the number
-is machine-dependent, so a threshold would fire on honest runs or mean nothing). **A full local
+`run.mjs` now prints `dev server peak RSS through warm-up` every run (reported, never enforced: the
+number is machine-dependent, so a threshold would fire on honest runs or mean nothing). It is a true
+peak, needing BOTH a 500 ms poll of the process group AND `/proc/<pid>/status`'s `VmHWM` — polling
+has gaps, and `VmHWM` disappears with the transient compile workers `next dev` reaps. An end-only
+sample read 9193 MB where the pair read 9662 MB (Codex review, PR #268). **A full local
 suite then passed 25/25 without killing the machine**, which it had done twice that day.
 
 One unrelated thing this surfaced, left unfixed and worth a ticket: `npx tsc --noEmit` reports 3
