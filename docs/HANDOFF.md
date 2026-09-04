@@ -414,6 +414,26 @@ does not travel with a checkout — E2E cannot run without it), `.env` from `.en
   whatever wins the PATH lookup. Verified `ss -ltnp` still shows only the compose container on
   `127.0.0.1:5432`, so no host server crept in with it.
 
+**2026-09-03 — `npm run test:e2e` can OOM a 30 GB dev box, and it is NOT a Next version
+regression.** The warm-up compiles all 243 routes in ONE `next dev`, and dev-mode compilation of
+that many routes costs many gigabytes. Twice in one session the kernel killed `next-server` at
+**anon-rss 26.9 GB** (`journalctl -k`: *"Out of memory: Killed process … (next-server)"*), taking
+the whole desktop session with it, both times during the warm-up.
+
+**The obvious hypothesis was wrong and is recorded so nobody re-chases it.** The crashes began
+right after the `16.2.12 → 16.3.4` bump, which looks damning. A bounded probe — one `next dev`, the
+same routes hit in the same order, RSS sampled every 2s, hard-killed at a ceiling — measured
+**16.3.4 peaking at 9.0 GB by route ~35 and 16.2.12 at 7.9 GB by route 32**, i.e. 16.2.12 is if
+anything *worse*. The bump is exonerated; the suite is simply close to this machine's ceiling, and
+the same run had passed twice earlier the same day (12m16s, 25/25). What tips it over is other
+memory in play — the OOM report names `claude-desktop` as the allocator that invoked the killer.
+
+Practical consequences: **CI is the reliable E2E gate**, having its own runner and its own memory
+(the `e2e` job passed on both PR #262 and this work); a local run wants the rest of the box quiet;
+and a mid-run desktop crash is survivable — the harness traps SIGTERM and still tears down its dev
+server and dev-DB fixtures, which it did cleanly both times. **Do not "fix" this by pinning Next
+back.**
+
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
