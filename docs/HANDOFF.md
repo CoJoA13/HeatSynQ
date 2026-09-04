@@ -462,6 +462,26 @@ by DOWNGRADING Prisma to 6.19.3, so do not run it.
   lint gate cannot run at all: *"Error while loading rule 'react/display-name'"*. Dropping the react
   plugin is not the workaround — it carries the `react-hooks` rules that `eslint.config.mjs`'s
   rationale block is written about. Revisit when `eslint-plugin-react` ships v10 support.
+- **Prisma stays at 7.9.1. Prisma 8 does not exist as an installable set, and 7.10.0 breaks the #40
+  P2002 field extraction.** Two separate findings, both measured:
+  - **8.0.0-rc.12 is CLI-only.** `prisma` publishes it as `latest`, but `@prisma/client` and
+    `@prisma/adapter-pg` have no 8.0.0 release at all — their only 8.x builds are `8.1.0-dev.*`
+    nightlies. `npm install` refuses outright (`ETARGET`, no matching version for
+    `@prisma/adapter-pg@8.0.0-rc.12`), and a CLI/client mismatch is something Prisma rejects. Note
+    `npm outdated` therefore reports "Latest 8.0.0-rc.12" for a version you cannot adopt; the
+    stable release is on the `prev` tag.
+  - **7.10.0 changes the P2002 payload and degrades every unique-violation message.** Measured on
+    this stack: the adapter now reports `constraint: { index: "Role_name_key" }` where 7.9.1 gave
+    `constraint: { fields: ["name"] }`. The column names are simply gone, so
+    `uniqueConflictFields` falls through to its "value" fallback and *"A role with that **name**
+    already exists"* becomes *"...with that **value** already exists"*. `tests/db-errors.test.ts`
+    catches it — 2 failures, and they are the two assertions written for exactly this (#40).
+    **Recovering the fields by parsing the index name is not viable**: 58 `@@unique` declarations,
+    many composite, so `CertReading_requirementId_position_key` cannot be split without knowing the
+    schema. A real fix is a Postgres catalog lookup in the error path or a generated
+    index→fields map — a design decision, not a dependency bump. Since 7.10.0 brings no offsetting
+    benefit here (it does NOT resolve the `mysql2` advisories — still 3.15.3), the bump was
+    declined rather than papered over by relaxing the tests.
 
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
