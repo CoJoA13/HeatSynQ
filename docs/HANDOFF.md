@@ -482,6 +482,25 @@ by DOWNGRADING Prisma to 6.19.3, so do not run it.
     index→fields map — a design decision, not a dependency bump. Since 7.10.0 brings no offsetting
     benefit here (it does NOT resolve the `mysql2` advisories — still 3.15.3), the bump was
     declined rather than papered over by relaxing the tests.
+- **TypeScript stays at 5.9.3 — but the APPLICATION CODE is already TS 7 clean, which is the part
+  worth remembering.** `tsc --noEmit` under 7.0.2 produced **25 errors in exactly one file**
+  (`tests/audit-children.test.ts`) and **zero everywhere else** — every route, service, component
+  and other test compiles. The blockers are both external:
+  - **`typescript-eslint` refuses TS 7 outright** — not a warning, an explicit
+    `Error: typescript-eslint does not support TS 7.0.` thrown at require time, so `eslint` exits 2
+    and the lint gate cannot run. Its latest (8.69.0, no v9 line exists) pins
+    `typescript: ">=4.8.4 <6.1.0"`, so there is nothing to upgrade or override to.
+  - **TS 7 moved the Compiler API out of the package root.** The `"."` export is now
+    `./lib/version.cjs` — the version string and nothing else — with the real API relocated to
+    explicitly-named `unstable/` subpaths (`typescript/unstable/ast`, `.../ast/is`,
+    `.../sync`). So `import ts from "typescript"` yields a module with no `createSourceFile`,
+    no `forEachChild`, no `isCallExpression`. That is what breaks `audit-children.test.ts`, and it
+    breaks it at RUNTIME as well as at typecheck — the #188 parsed census stops enforcing
+    anything. Porting it is a real piece of work against an API whose own name says unstable, and
+    it must not be swapped back to regex: #188 removed the regex deliberately.
+
+  **When the ecosystem catches up, budget for the sweep-test port and little else.** Re-measure
+  with `npx tsc --noEmit` before assuming that is still true.
 
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
