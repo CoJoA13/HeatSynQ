@@ -31,6 +31,10 @@ export function PracticeResetControl() {
       // reset credentials (Codex). A full navigation, since the session no longer exists server-side.
       setMessage("Practice data was reset. Signing you out — sign back in with admin / admin.");
       setTimeout(() => {
+        // The full document navigation is the POINT, per the comment above: `router.push` would
+        // keep the stale shell and the dead session this reset just truncated. The rule arrived
+        // with eslint-config-next 16.3.4 and does not know that.
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- session is gone server-side
         window.location.href = "/login";
       }, 1500);
     } catch (e) {
