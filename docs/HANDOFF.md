@@ -60,7 +60,7 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-04 — TWO NAV-RAIL DEFECTS FIXED, both invisible to every review that had run.** (1) The
+**2026-09-04 — TWO NAV-RAIL DEFECTS FIXED, both invisible to every review that had run (merged `1856491`, PR #270, squash).** (1) The
 `<aside>` had no `sticky` and no `overflow`, so scrolling the order board — several thousand px tall —
 left the operator with no navigation on screen at all. The fix sticks the INNER wrapper, not the
 aside: the aside stays in flow and keeps stretching full height (verified — the rail column is
@@ -75,7 +75,7 @@ admin-group entry gated on the `admin` AREA (what `/api/setup/readiness|state` a
 the §5.15 silent-dead-end rule the Templates and Backups entries are both already shaped by, missed
 here because the entry simply did not exist. **Neither defect was in #239's screen-polish backlog,
 and the 2026-08-25 audit's four screenshot reviewers could not have caught either** — one needs
-scrolling, the other needs traversing links to find a page nothing points at. Gates on the branch:
+scrolling, the other needs traversing links to find a page nothing points at. Gates at merge:
 **3743 tests / 219 files**, `tsc`/`eslint`/`build` clean, E2E **25/25 PASS** (no retries), manual
 re-captured against a rebuilt demonstration dataset (sweep clean) and `manual.html` rebuilt
 deterministically at 11.93 MB. Manual ch12 gained a **Setup** section; README's contents row updated.
