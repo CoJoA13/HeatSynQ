@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { appendRows, computeOrphanChurn } from "@/lib/bulk-grid";
+import { fileURLToPath } from "node:url";
+import { appendRows, computeOrphanChurn, mergeEdit } from "@/lib/bulk-grid";
 
 // Pure module (no DOM/React state involved), unlike the rest of bulk-grid.ts's hook — extracted
 // specifically so the id-churn matrix is unit-testable without a component-test harness (this
@@ -139,6 +140,65 @@ describe("appendRows", () => {
   });
 });
 
+// #279: `dirty` was `edits.size > 0 || added.length > 0 || removedIds.size > 0` under a docstring
+// promising "anything a Save button would actually send that DIFFERS from server state as loaded".
+// It measured overlay cardinality instead, so editing a cell and typing the original value back
+// left the row in `edits` and the grid reporting dirty — which since #272 means the "Unsaved
+// changes" badge, a discard prompt on every navigation, and every gate that REFUSES over a dirty
+// editor (invoice finalize/recalculate/print, shipment ticket/BOL, the order hub's traveler print)
+// firing over nothing. That is precisely the prompt `unsaved-guard.ts` says people learn to click
+// through.
+//
+// `mergeEdit` is the pure decision behind the fix, and the fix is a PRUNE rather than a narrowed
+// predicate: leaving the no-op entry in place would keep it winning at compose time, invisible and
+// unclearable (Save is disabled, and Save is the only caller of `reset`), re-arming with no user
+// action the moment another actor touched that row — `detectOrphans` returns early while the id
+// set is unchanged. Removing the entry makes "nothing to send" and "nothing overlaid" one state.
+describe("mergeEdit", () => {
+  const base = { qty: "5", weight: "100.5", note: "" };
+
+  it("keeps a field that genuinely differs", () => {
+    expect(mergeEdit(undefined, { qty: "6" }, base)).toEqual({ qty: "6" });
+  });
+
+  it("THE DEFECT: typing a value back to the server's leaves the row UNEDITED, not merely un-dirty", () => {
+    // Mutation-proof: delete the equality prune in `mergeEdit` and this reds. Returning `undefined`
+    // rather than `{}` is what lets `updateExisting` delete the map entry — an empty-object entry
+    // would still make `edits.size > 0`, so `dirty` would stay true and nothing would be fixed.
+    expect(mergeEdit({ qty: "6" }, { qty: "5" }, base)).toBeUndefined();
+  });
+
+  it("drops only the reverted field and keeps the rest of the overlay", () => {
+    expect(mergeEdit({ qty: "6", weight: "7" }, { qty: "5" }, base)).toEqual({ weight: "7" });
+  });
+
+  it("re-checks the WHOLE overlay, not just the incoming patch's keys", () => {
+    // The invoice grid stamps `priceSource`/`needsPrice` alongside every amount edit, so a field
+    // left from an earlier keystroke can be the one that just became equal. Mutation-proof: compare
+    // only `Object.keys(patch)` and this reds.
+    expect(mergeEdit({ qty: "5", weight: "9" }, { weight: "100.5" }, base)).toBeUndefined();
+  });
+
+  it("compares strings EXACTLY — no trim, no numeric coercion", () => {
+    // Composed values are the strings the PUT carries. "5.00" over a server "5" is a real payload
+    // difference, and callers differ on trimming (SerialsSection trims `serial` at save but sends
+    // `description` untrimmed), so normalising here would report a genuine difference clean.
+    expect(mergeEdit(undefined, { qty: "5.00" }, base)).toEqual({ qty: "5.00" });
+    expect(mergeEdit(undefined, { qty: " 5" }, base)).toEqual({ qty: " 5" });
+    expect(mergeEdit(undefined, { note: " " }, base)).toEqual({ note: " " });
+  });
+
+  it("clearing a field the server also holds empty is not an edit", () => {
+    expect(mergeEdit(undefined, { note: "" }, base)).toBeUndefined();
+  });
+
+  it("never mutates the overlay it was handed", () => {
+    const current = { qty: "6" };
+    mergeEdit(current, { qty: "5" }, base);
+    expect(current).toEqual({ qty: "6" });
+  });
+});
+
 // The call-site half of the same finding: a bulk expansion has to reach the grid through the bulk
 // API. Checked at the source, because the alternative — a per-row loop — is behaviourally
 // identical and only differs in cost, so no assertion on the resulting rows could ever tell them
@@ -162,5 +222,46 @@ describe("serial-range expansion call sites", () => {
     const addRange = /function addRange\(\)[\s\S]*?\n  \}/.exec(src);
     expect(addRange, "addRange() not found — update this sweep alongside the rename").not.toBeNull();
     expect((addRange![0].match(/onChange\(/g) ?? [])).toHaveLength(1);
+  });
+});
+
+// The #279 invariants that BEHAVIOUR cannot express, checked at the source — the `serial-range
+// expansion call sites` precedent directly below, and the partial-unique-sweep reasoning it cites.
+describe("useBulkGrid baseline call sites", () => {
+  const SRC = fileURLToPath(new URL("../src", import.meta.url));
+  const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  const consumers = walk(SRC)
+    .filter((f) => f.endsWith(".tsx") && !f.endsWith("bulk-grid.ts"))
+    .map((f) => [f, readFileSync(f, "utf8")] as const)
+    .filter(([, src]) => /\buseBulkGrid\s*\(/.test(src));
+
+  it("finds the consumers at all — a walk that matches nothing would pass everything below", () => {
+    expect(consumers.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("every consumer hands the hook its rows and reads the composed list back — never re-supplies them", () => {
+    // The whole shape of the fix: `dirty` and the rendered rows must come from ONE baseline. A
+    // consumer that passed its rows a second time (the old `grid.compose(rows, toFields)`) would
+    // reintroduce exactly the drift #279 was — two supply sites for the same server array — and no
+    // assertion on the returned rows could tell the two apart. Mutation-proof: restore a
+    // `compose(` call at any call site and this reds.
+    for (const [file, src] of consumers) {
+      expect(src, `${file}: useBulkGrid must be called with (serverRows, toFields)`)
+        .toMatch(/useBulkGrid\(\s*\w/);
+      expect(src, `${file}: must not re-supply rows through a compose() call`)
+        .not.toMatch(/\.compose\s*\(/);
+    }
+  });
+
+  it("added rows still spread the caller's fields LAST — #281 preserved, not silently changed", () => {
+    // A caller whose `Fields` declares its own `key` shadows the composed one; the invoice grid
+    // does, with `key: ""`, and #281 is that defect. Fixing it inside #279 would be an unrelated
+    // behaviour change in a PR that promises not to make one — and it is invisible to any
+    // assertion on composed rows, because a fixture whose Fields has no `key` member behaves
+    // identically under either order. DELETE THIS TEST when #281 is fixed; it pins a bug on
+    // purpose, and only so that it cannot move by accident.
+    const src = readFileSync(join(SRC, "lib/bulk-grid.ts"), "utf8");
+    expect(src).toMatch(/key: a\.clientId, isNew: true, \.\.\.a/);
   });
 });
