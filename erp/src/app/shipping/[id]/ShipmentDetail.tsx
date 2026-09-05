@@ -22,6 +22,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
 import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
+import { confirmDiscard } from "@/lib/use-unsaved-section";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/shippers.ts's exported row shapes — not imported from
@@ -693,6 +694,10 @@ export function ShipmentDetail({ id }: { id: string }) {
    */
   async function reverseAction() {
     if (!shipper) return;
+    // BEFORE the reason prompt and the request: this navigates to the reversal on success, and
+    // this page's own line/container/serial grids may be holding unsaved edits. Asking after the
+    // reversal exists would cancel nothing.
+    if (!confirmDiscard()) return;
     const reason = prompt(
       `Reverse shipment (Packing List ${shipper.shipperNumber})?\n\n` +
       "A reversal is a NEW shipment carrying the negative of every line on this one: it un-ships " +

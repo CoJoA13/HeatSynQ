@@ -6,6 +6,7 @@ import { useBulkGrid } from "@/lib/bulk-grid";
 import { expandSerialRange } from "@/lib/serial-range";
 import { findDuplicateSerials } from "../new/OrderLineCard";
 import type { ApplyMutation, OrderLine, OrderMutationResult, OrderSerial } from "./page";
+import { SaveButton } from "@/components/SaveButton";
 
 type Fields = { serial: string; description: string };
 
@@ -138,10 +139,9 @@ function LineSerialsEditor({
           Duplicate serial{dupes.size > 1 ? "s" : ""}: {[...dupes].join(", ")}
         </p>
       )}
-      <button onClick={() => void save()} disabled={!editGate.allowed || !grid.dirty} title={editGate.title}
-              className="rounded bg-slate-800 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-        Save serials
-      </button>
+      <SaveButton label="Save serials" section="Serials" gate={editGate}
+                    dirty={grid.dirty} alsoUnsaved={rangeInput.trim() !== ""}
+                    onSave={() => void save()} />
     </div>
   );
 }

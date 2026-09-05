@@ -10,6 +10,7 @@ import {
   type InvoiceKindValue, type InvoiceStatusValue,
 } from "@/lib/invoice-constants";
 import type { OrderStatusValue } from "@/lib/order-constants";
+import { confirmDiscard } from "@/lib/use-unsaved-section";
 
 /** Local mirror of src/server/invoices.ts's `InvoiceListRow` — not imported from src/server/**
  *  (CLAUDE.md). Same shape `GET /api/orders/[id]/invoices` (`invoicesForOrder`, Task 16) and
@@ -85,6 +86,10 @@ export function InvoicesSection({
           : creating ? "Creating…" : undefined;
 
   async function createInvoice() {
+    // BEFORE the request, not after: this navigates on success, and the order hub's grids
+    // (Containers, Serials, Charges, Loads) may be holding unsaved edits. Prompting after the
+    // invoice exists would cancel nothing — the server state has already moved.
+    if (!confirmDiscard()) return;
     setCreating(true);
     try {
       const res = await api<{ invoice: { id: string } }>("/api/invoices", {

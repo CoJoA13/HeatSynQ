@@ -8,6 +8,7 @@ import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 
 // Local mirrors of src/server/process-templates.ts's exported row types — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -193,6 +194,12 @@ function Detail({ id }: { id: string }) {
   function isBoilerplateDirty(step: TemplateStep): boolean {
     return shownBoilerplate(step) !== step.boilerplate;
   }
+  // Per-step dirtiness aggregated into the one question the guard asks about this section.
+  // BOTH drafts on this page, not just the steps: the template NAME has its own draft and its own
+  // Save button, so covering only the boilerplate left a rename to be discarded in silence (Codex
+  // P1 on #272 — and the registration sweep passed this file because it checks that a file
+  // registers, not that the registration covers every draft in it).
+  useUnsavedSection(nameDirty || (template?.steps ?? []).some(isBoilerplateDirty), "Process template");
 
   // One at a time, the same guard the part-detail Add step carries (Codex, PR #22): addCodeId is
   // not cleared until the POST returns, and repeating a code on a template is legitimate, so two

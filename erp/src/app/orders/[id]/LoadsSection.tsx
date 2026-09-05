@@ -3,6 +3,7 @@ import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import type { ApplyMutation, OrderLoad, OrderMutationResult } from "./page";
+import { SaveButton } from "@/components/SaveButton";
 
 type Fields = { loadNumber: string; qty: string; weight: string };
 
@@ -183,10 +184,8 @@ export function LoadsSection({
                 className="rounded border border-slate-800 px-3 py-1 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
           Re-split
         </button>
-        <button onClick={() => void save()} disabled={!editGate.allowed || !grid.dirty} title={editGate.title}
-                className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-          Save loads
-        </button>
+        <SaveButton label="Save loads" section="Loads" gate={editGate}
+                    dirty={grid.dirty} onSave={() => void save()} />
       </div>
     </section>
   );

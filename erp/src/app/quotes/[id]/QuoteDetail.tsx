@@ -31,6 +31,7 @@ import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
 import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL } from "@/lib/quote-constants";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 import {
   headerFormFrom, headerPatch, lineFormsFrom, linesComparable, linesPayload,
   type HeaderForm, type LineForm, type LinkedOrderRef, type PriceForm,
@@ -548,6 +549,18 @@ export function QuoteDetail({ id }: { id: string }) {
   // Per-price "add a break" draft, keyed by price KEY (the PricingSection breakDrafts shape).
   const [breakDrafts, setBreakDrafts] = useState<Record<string, { threshold: string; price: string }>>({});
   const draftFor = (priceKey: string) => breakDrafts[priceKey] ?? { threshold: "", price: "" };
+
+  // Registered HERE rather than beside `dirty` above, because a break draft is real work that
+  // `dirty` cannot see: `dirty` diffs the header and `lines` against the loaded detail, and a
+  // threshold/price typed into the Add break controls does not reach `lines` until Add break is
+  // clicked. So a fully typed break was discardable by any navigation or reload with no warning,
+  // from a file the sweep already counted as registered (Codex P1 on #272) — the same
+  // file-registers-therefore-covered blind spot the per-flag assertion closed for Save buttons.
+  // `dirty` itself is left alone: it answers "does the server disagree with this form", which is
+  // what the Save and print gates need, and an unadded break changes neither.
+  const breakDraftStarted =
+    Object.values(breakDrafts).some((d) => d.threshold.trim() !== "" || d.price.trim() !== "");
+  useUnsavedSection(dirty || breakDraftStarted, "Quote");
   function addBreak(lineKey: string, priceKey: string) {
     const draft = draftFor(priceKey);
     if (!draft.threshold || !draft.price) return;

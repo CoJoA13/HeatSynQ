@@ -3,6 +3,7 @@ import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import type { ApplyMutation, OrderCharge, OrderMutationResult } from "./page";
+import { SaveButton } from "@/components/SaveButton";
 
 type Fields = { description: string; amount: string };
 
@@ -85,10 +86,8 @@ export function ChargesSection({
                 className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           Add charge
         </button>
-        <button onClick={() => void save()} disabled={!editGate.allowed || !grid.dirty} title={editGate.title}
-                className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-          Save charges
-        </button>
+        <SaveButton label="Save charges" section="Charges" gate={editGate}
+                    dirty={grid.dirty} onSave={() => void save()} />
       </div>
     </section>
   );

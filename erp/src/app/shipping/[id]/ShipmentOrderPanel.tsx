@@ -22,18 +22,7 @@ import {
   type LineInfo, type ShippedInfo, type ContainerInfo, type SerialInfo,
 } from "../ShipmentGrids";
 import type { ApplyMutation, OrderCatalog, ShipperOrder, ShipperMutationResult } from "./ShipmentDetail";
-
-/** The one Save-button shape all three grids' footers share on this page. */
-function SaveButton({ label, gate, dirty, onSave }: {
-  label: string; gate: Gate; dirty: boolean; onSave: () => void;
-}) {
-  return (
-    <button onClick={onSave} disabled={!gate.allowed || !dirty} title={gate.title}
-            className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-      {label}
-    </button>
-  );
-}
+import { SaveButton } from "@/components/SaveButton";
 
 /** Read-only strip for RELEASED rows (snapshot + release, ruling 23): the order-side row was
  *  corrected away, so these render from their snapshots, stay out of the editable grid and its
@@ -134,7 +123,7 @@ function LinesGrid({
     <LinesGridView rows={rows} candidates={candidates} infoByLineId={infoByLineId} shippedByLineId={shippedByLineId}
                    gate={editGate} orphanWarning={grid.orphanWarning}
                    onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                   footer={<SaveButton label="Save lines" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                   footer={<SaveButton label="Save lines" section="Lines" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>);
 }
 
@@ -194,7 +183,7 @@ function ContainersGrid({
     <ContainersGridView rows={rows} candidates={candidates} infoById={infoById}
                         gate={editGate} orphanWarning={grid.orphanWarning}
                         onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                        footer={<SaveButton label="Save containers" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                        footer={<SaveButton label="Save containers" section="Containers" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>);
 }
 
@@ -247,7 +236,7 @@ function SerialsGrid({
     <SerialsGridView rows={rows} candidates={candidates} infoById={infoById}
                      gate={editGate} orphanWarning={grid.orphanWarning}
                      onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                     footer={<SaveButton label="Save serials" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                     footer={<SaveButton label="Save serials" section="Serials" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>
   );
 }

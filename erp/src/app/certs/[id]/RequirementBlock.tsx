@@ -14,6 +14,7 @@ import { useState } from "react";
 import type { Gate } from "@/lib/permission-ui";
 import { computePassed } from "@/lib/pass-fail";
 import type { CertRequirementRow } from "./CertDetail";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 
 /** One reading as PUT /api/certs/[id]/results accepts it. `value` crosses as the typed decimal
  *  string (`decimalField(10, 4)` accepts a decimal string); `passed` is only meaningful when
@@ -85,6 +86,7 @@ export function RequirementBlock({ requirement, editGate, onSave }: {
   const [rows, setRows] = useState<DraftRow[]>(() => fromServer(requirement));
   const [nextKey, setNextKey] = useState(() => requirement.readings.length);
   const [dirty, setDirty] = useState(false);
+  useUnsavedSection(dirty, "Cert results");
   const [saving, setSaving] = useState(false);
   // Local pre-validation refusal (a bad decimal named in place) — NOT a failed save: the draft
   // stays, unlike the parent's rollback-then-report for a request the server actually rejected.

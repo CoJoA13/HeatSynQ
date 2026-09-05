@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
 // The pure diff logic lives in a client-safe leaf so tests/audit-diff.test.ts can pin it —
 // including the raw-FK suppression (#14 item 2's render half) — without a DOM test env.
-import { changedFields } from "@/lib/audit-diff";
+import { changedFields, summarizeChange, detailJson } from "@/lib/audit-diff";
 // The parent → child-section registry the server walked to build this union (#153) — imported
 // here so a foreign row is LABELLED by the same source of truth that decided to include it, and
 // the panel can never render a row it cannot name.
@@ -121,20 +121,45 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
                 </span>
                 <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
               </div>
-              {changedFields(e.before, e.after).map((k) => (
-                // #170: a changed field is stringified inline, and for a relation array pulled in by
-                // SNAPSHOT_INCLUDE (e.g. `lines`) that is kilobytes of single-line JSON with almost
-                // no break opportunities. With no wrapping rule it cannot wrap, so it pushed the
-                // whole page wider than the viewport (a CREATE entry, where every key counts as
-                // changed, is the worst case). `break-all` lets it wrap at any character so it can
-                // never resize the page again; `max-h-40 overflow-y-auto` keeps a multi-KB payload
-                // scrolling inside its own box rather than turning one row into a wall. Every byte
-                // stays reachable — this constrains the rendering, it does not truncate. Load-bearing
-                // classes: do not drop them in a "cleanup" (the defect was the ABSENCE of exactly this).
-                <div key={k} className="ml-2 max-h-40 overflow-y-auto break-all text-xs text-slate-600">
-                  {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
-                </div>
-              ))}
+              {changedFields(e.before, e.after).map((k) => {
+                // A changed field LEADS with a human line (`summarizeChange`) and keeps the raw
+                // snapshots behind a disclosure. A scalar says everything on its own line and gets
+                // no disclosure at all; a relation array or object gets "5 items, contents changed"
+                // over a <details> holding the indented before/after.
+                //
+                // #170's rule still governs the box that holds the bytes, and its classes are
+                // load-bearing: a SNAPSHOT_INCLUDE relation is kilobytes of single-line JSON with
+                // almost no break opportunities, so with no wrapping rule it pushed the whole page
+                // wider than the viewport (a CREATE entry, where every key counts as changed, is
+                // the worst case). `break-all` lets it wrap at any character so it can never resize
+                // the page again; `max-h-40 overflow-y-auto` keeps a multi-KB payload scrolling
+                // inside its own box rather than turning one row into a wall. Do not drop them in a
+                // "cleanup" — the defect was the ABSENCE of exactly this.
+                //
+                // The disclosure does NOT weaken that contract: it constrains the rendering, it
+                // still does not truncate. Every byte of both snapshots is in `detailJson`, one
+                // click away instead of zero.
+                const { inline, expandable } = summarizeChange(e.before?.[k], e.after?.[k]);
+                if (!expandable) {
+                  // The cap belongs here too, and dropping it was a regression (Codex P2 on #272):
+                  // a scalar is not necessarily short — an audited `notes` or `reason` runs to
+                  // thousands of characters — so an uncapped scalar turns one history row into the
+                  // multi-screen wall #170's box exists to prevent. Same classes, same reason.
+                  return (
+                    <div key={k} className="ml-2 max-h-40 overflow-y-auto break-all text-xs text-slate-600">
+                      {k}: {inline}
+                    </div>
+                  );
+                }
+                return (
+                  <details key={k} className="ml-2 text-xs text-slate-600">
+                    <summary className="cursor-pointer break-all">{k}: {inline}</summary>
+                    <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-1">
+                      {detailJson(e.before?.[k], e.after?.[k])}
+                    </pre>
+                  </details>
+                );
+              })}
             </li>
           );
         })}

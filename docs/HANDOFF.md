@@ -60,6 +60,68 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-04 (second pass) — THE HISTORY PANEL READS, AND UNSAVED GRID EDITS CAN NO LONGER VANISH.**
+Two findings from a UI review that followed the nav work. (1) `HistoryPanel` stringified every
+changed field with a bare `JSON.stringify`, so a SNAPSHOT_INCLUDE relation rendered as minified JSON
+— `steps: [{"id":"cmtn80x45…","code":{…}}]`. #170 had already stopped that WIDENING the page
+(`break-all` + a capped scrolling box) and its contract is that the rendering is constrained, never
+truncated; what was left was legibility. `summarizeChange`/`detailJson` (pure, in `audit-diff.ts`)
+now lead with a human line — `steps: 4 items → 5 items`, an object's own name where it has one — and
+put the indented before/after behind a `<details>`. **#170's contract is intact: every byte is still
+there, one click away instead of zero.** (2) A detail page runs TWO save models at once — the order
+hub's PO number / VS order # / job # / Notes save on BLUR, while Containers / Serials / Charges /
+Loads need an explicit Save click — and nothing on screen said which was which, while `beforeunload`
+appeared NOWHERE in `src/`. So an edited-but-unsaved grid was discarded silently on any nav click,
+and making the rail sticky had just put those links in reach at every scroll position. The blur-save
+architecture is §5.13 and was NOT redesigned; instead `unsaved-guard.ts` (pure registry + two
+predicates) plus `useUnsavedSection` back a shared `SaveButton` that registers the section AND shows
+an "Unsaved changes" badge — **registration lives inside the button deliberately, so a section cannot
+acquire an explicit Save without declaring what is at risk.** Shell mounts both halves: `beforeunload`
+(the only thing that catches a reload — it cannot see an in-app route change) and a capture-phase
+click guard (the only thing that catches an in-app Link — it cannot see a reload). The click
+predicate is deliberately narrow (no downloads, new tabs, modified clicks, in-page hashes, or
+re-entering the open page): a prompt that fires on those is one people learn to click through. Five
+hand-rolled copies of the same Save button collapsed into the shared one.
+
+**Two Codex rounds on that PR then found the claim was too strong, and the second was the important
+one.** "Registration is structural because it lives inside `SaveButton`" only ever bound editors that
+USE that button — and **eight did not**: the invoice lines grid, the template editor, cert results,
+process steps, the process-template boilerplate, the quote page, custom fields and the receivables
+apply panel all held an explicit-save draft while `unsavedLabels()` stayed empty. Codex named two;
+`tests/unsaved-registration-sweep.test.ts` — written because a comment cannot hold a census — found
+the other six. **That sweep was itself vacuous on first write**: `registers()` matched the IMPORT, so
+deleting a registration left it green; caught by mutation, fixed to match the CALL after stripping
+import lines, which is #188's blind spot re-found in a new file. Its allowlist-honesty assertion then
+immediately caught a stale entry. **Rounds 4-6 kept finding registrations that were genuinely missing**, the new-shipment page being
+the hardest: it has no `dirty` flag at all — a whole shipment is drafted in local state — so the
+honest predicate is "has the operator started one", and the first pass named the fields that came to
+mind and silently discarded freight terms/description, package count, pro no, SCAC and the
+credit-hold reason. If a field reaches `buildBody` it belongs in the predicate. Also fixed: `/api/`
+links no longer prompt (an export leaves the page where it is, and a prompt that fires when nothing
+is at stake is the one people learn to click through).
+
+**Round 3 then found the sweep's own blind spot**, which is the more useful lesson: it checked that
+a FILE registers, not that the registration covers every draft IN it — so the process-template page
+passed while its second draft (the template NAME, with its own Save button) stayed outside the guard
+and a rename was discarded in silence. The sweep now also asserts that every dirty-ish identifier
+gating a `disabled={…}` Save appears inside a `useUnsavedSection(...)` argument or a
+`<SaveButton dirty={…}>`; mutation-checked by removing `nameDirty` again. Round 1 also fixed: programmatic `router.push` bypassing both
+listeners (now one shared `confirmDiscard`, called BEFORE the request at `createInvoice` and
+`reverseAction` — a prompt after the invoice exists cancels nothing), equal object labels rendering
+`"Heat Treat" → "Heat Treat"`, a null relation reading `…` rather than `null`, and the scalar branch
+losing #170's height cap. `beforeunload` is now armed only while dirty: merely registering one makes
+a document ineligible for Firefox's bfcache, so a permanently-armed listener costs every clean user a
+reload on Back. **`useUnsavedPresent()` ships here unused, deliberately**: rounds 4-7 also turned up
+a second, different defect — controls that ARCHIVE paper or REPLACE server rows running over a dirty
+editor — and that is a data-integrity change to paper issuance rather than a navigation fix, so it
+goes in its own PR stacked on this one. This branch ships the registry it reads.
+**Browser Back/Forward remains unguarded — filed as #273, not overlooked**: the App
+Router has no blocking API in Next 16, and the sentinel-history workaround cannot be removed once the
+grid is saved, so the first Back after an ordinary edit-then-save would land on a same-URL entry and
+appear to do nothing. Gates: **3785 tests / 221
+files**, `tsc`/`eslint` clean, E2E **25/25 PASS** (no retries — the guard does not interfere
+with real flows), manual re-captured (sweep clean) and `manual.html` rebuilt deterministically.
+
 **2026-09-04 — TWO NAV-RAIL DEFECTS FIXED, both invisible to every review that had run (merged `1856491`, PR #270, squash).** (1) The
 `<aside>` had no `sticky` and no `overflow`, so scrolling the order board — several thousand px tall —
 left the operator with no navigation on screen at all. The fix sticks the INNER wrapper, not the
