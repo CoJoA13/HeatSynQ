@@ -91,6 +91,22 @@ export function computeOrphanChurn(params: {
 export type AddedRow<Fields> = { clientId: string } & Fields;
 
 /**
+ * The pure patch behind `updateAdded`: the row whose `clientId` matches takes the patch, everything
+ * else is returned untouched.
+ *
+ * Extracted for the same reason as `appendRows` below — it is the third place an identity can be
+ * spread over (#281), and the only way to prove it is not. The `clientId` is re-stamped AFTER the
+ * patch: a patch is a `Partial<Fields>`, and while `NoRowIdentity` now stops a typed `Fields` from
+ * declaring `clientId`, that guard is invisible to plain JS and to an `as` cast — which is exactly
+ * how the original defect reached production through a type that looked fine.
+ */
+export function patchAdded<Fields extends Record<string, string>>(
+  current: readonly AddedRow<Fields>[], clientId: string, patch: Partial<Fields>,
+): AddedRow<Fields>[] {
+  return current.map((a) => (a.clientId === clientId ? { ...a, ...patch, clientId } : a));
+}
+
+/**
  * The pure append behind `addRows` (fix-wave R4 finding 7): every row in `rows` gets its own
  * client id and lands, in order, after everything already there — in ONE pass over one copy.
  *
@@ -103,7 +119,9 @@ export function appendRows<Fields extends Record<string, string>>(
   current: readonly AddedRow<Fields>[], rows: readonly Fields[],
 ): AddedRow<Fields>[] {
   const next = current.slice();
-  for (const row of rows) next.push({ clientId: crypto.randomUUID(), ...row });
+  // The generated id spreads LAST, the #281 rule: a `Fields` carrying a `clientId` of its own would
+  // otherwise overwrite it, and a row whose clientId is not its own can never be patched or removed.
+  for (const row of rows) next.push({ ...row, clientId: crypto.randomUUID() });
   return next;
 }
 
@@ -144,13 +162,69 @@ export function mergeEdit<Fields extends Record<string, string>>(
 }
 
 /**
+ * The two names this hook OWNS on every composed row, declared as an impossible-to-satisfy shape so
+ * that a `Fields` type claiming either one is a COMPILE ERROR at the call site rather than a silent
+ * shadow at runtime (#281).
+ *
+ * Three names, not two: an ADDED row is identified by its `clientId` before it has a server id, so
+ * a field of that name shadows an identity just as surely — and an added row that loses its
+ * `clientId` can never be patched or removed, which is the same dead end by a different route.
+ *
+ * The members are optional string LITERALS on purpose: TypeScript reports the mismatch by printing
+ * the literal, so the compiler itself tells the next author what is wrong and why. A plain
+ * `key?: never` also rejects the call, but on the type PARAMETER it collapses `ComposedRow<Fields>`
+ * to `never` and buries the one real message under dozens of "property does not exist on type
+ * 'never'" — so the prohibition rides `toFields`'s RETURN TYPE, where it produces exactly one error,
+ * at the call site, naming the offending property.
+ */
+type NoRowIdentity = {
+  key?: "useBulkGrid supplies `key` — a Fields type must not declare one (#281)";
+  isNew?: "useBulkGrid supplies `isNew` — a Fields type must not declare one (#281)";
+  clientId?: "useBulkGrid supplies `clientId` — a Fields type must not declare one (#281)";
+};
+
+/**
+ * The composed, render-ready row list — server rows (skipping any marked removed, mapped through
+ * `toFields` and overlaid with whatever edit exists for the id) followed by locally-added rows.
+ *
+ * Pure and exported for the same reason as `computeOrphanChurn` / `appendRows` / `mergeEdit`: the
+ * hook itself cannot be driven under vitest (environment "node", no component renderer), so this is
+ * the only place the composition can be mutation-proven. It is NOT a re-supply hatch — a consumer
+ * that calls it with its own rows would recreate the two-baselines drift #279 removed, and the
+ * call-site sweep in tests/bulk-grid.test.ts refuses it.
+ *
+ * THE IDENTITY SPREADS LAST, in both branches, and that is the whole of #281. It used to spread
+ * first, so a caller whose `Fields` declared a `key` overwrote it — the invoice grid's added charge
+ * rows composed under `key: ""`, which matched no `clientId`, leaving a row that could not be typed
+ * into, could not be removed, and held the grid dirty forever. Last-wins makes the identity
+ * un-shadowable whatever a caller passes, and `NoRowIdentity` above stops the collision compiling
+ * in the first place; neither alone is enough, because the type guard is invisible to plain JS and
+ * an `as` cast, and the ordering is invisible to a reader who never looks.
+ */
+export function composeRows<Row extends BulkRow, Fields extends Record<string, string>>(params: {
+  serverRows: readonly Row[];
+  toFields: (row: Row) => Fields;
+  edits: ReadonlyMap<string, Partial<Fields>>;
+  added: readonly AddedRow<Fields>[];
+  removedIds: ReadonlySet<string>;
+}): ComposedRow<Fields>[] {
+  const { serverRows, toFields, edits, added, removedIds } = params;
+  return [
+    ...serverRows
+      .filter((r) => !removedIds.has(r.id))
+      .map((r) => ({ ...toFields(r), ...(edits.get(r.id) ?? {}), key: r.id, isNew: false })),
+    ...added.map((a) => ({ ...a, key: a.clientId, isNew: true })),
+  ];
+}
+
+/**
  * `Fields` is the flat, string-valued shape a grid's inputs are bound to (e.g. containers'
  * `{ typeId, count, qty, tareWeight, grossWeight }` — every value a plain string, same wire-shape
  * convention the order entry page uses throughout: what a text input can hold, converted to the
  * server's numbers/decimals only when a Save actually builds the request body).
  */
 export function useBulkGrid<Row extends BulkRow, Fields extends Record<string, string>>(
-  serverRows: readonly Row[], toFields: (row: Row) => Fields,
+  serverRows: readonly Row[], toFields: (row: Row) => Fields & NoRowIdentity,
 ) {
   const [edits, setEdits] = useState<Map<string, Partial<Fields>>>(new Map());
   const [added, setAdded] = useState<AddedRow<Fields>[]>([]);
@@ -190,7 +264,7 @@ export function useBulkGrid<Row extends BulkRow, Fields extends Record<string, s
   /** Patches one locally-ADDED row (identified by the client id `addRow` returned it under) —
    *  these have no server state to compose with, so the row IS the edit. */
   function updateAdded(clientId: string, patch: Partial<Fields>) {
-    setAdded((cur) => cur.map((a) => (a.clientId === clientId ? { ...a, ...patch } : a)));
+    setAdded((cur) => patchAdded(cur, clientId, patch));
   }
 
   /** Marks an existing server row for removal on the next Save. Never mutates the server array
@@ -207,7 +281,8 @@ export function useBulkGrid<Row extends BulkRow, Fields extends Record<string, s
    *  the client id so a caller that needs it immediately (none currently do) can have it. */
   function addRow(initial: Fields): string {
     const clientId = crypto.randomUUID();
-    setAdded((cur) => [...cur, { clientId, ...initial }]);
+    setAdded((cur) => [...cur, { ...initial, clientId }]); // identity last — see `appendRows`
+    
     return clientId;
   }
 
@@ -314,19 +389,10 @@ export function useBulkGrid<Row extends BulkRow, Fields extends Record<string, s
    * the same server rows is how the two answers drift apart, which is #279's shape.
    *
    * Recomputed fresh on every render — nothing here is memoized state of its own, so it can never
-   * itself go stale.
+   * itself go stale. The composition proper is `composeRows` above, so that it is testable.
    */
   detectOrphans(serverRows);
-  const rows: ComposedRow<Fields>[] = [
-    ...serverRows
-      .filter((r) => !removedIds.has(r.id))
-      .map((r) => ({ key: r.id, isNew: false, ...toFields(r), ...(edits.get(r.id) ?? {}) })),
-    // Spread order preserved verbatim: a caller whose `Fields` declares its own `key` shadows the
-    // composed one. That is a live defect for exactly one caller (#281, the invoice grid's added
-    // charge rows) and fixing it here would smuggle an unrelated behaviour change into #279 —
-    // pinned unchanged by a test rather than left to chance.
-    ...added.map((a) => ({ key: a.clientId, isNew: true, ...a })),
-  ];
+  const rows = composeRows({ serverRows, toFields, edits, added, removedIds });
 
   return {
     edits, added, removedIds, dirty, orphanWarning, rows,
