@@ -61,16 +61,17 @@ merged is a pointer. Do not append a new phase narrative here — this file is t
 every fresh session and has to stay readable in one pass.
 
 **2026-09-05 (third pass) — THE GRID OWNS THE ROW'S IDENTITY, AND A FIELDS TYPE CAN NO LONGER TAKE
-IT (#281).** `useBulkGrid` supplies `key`/`isNew` on every composed row and `clientId` on every added
-one, but the composition spread the caller's fields LAST — so a `Fields` type declaring one of those
-names silently overwrote it. Exactly one caller did: the invoice grid's `LineFields` declared `key`,
-and `blankChargeRow` seeded it `""`. Every locally-added charge row therefore composed under
-`key: ""`, which matched no `clientId` — the row could not be typed into (`updateAdded("")` patches
-nothing), could not be removed (`removeAdded("")` filters nothing), rendered as a duplicate React
-key, and held `added.length > 0` forever, which through `useUnsavedPresent()` disabled invoice
-finalize, recalculate and print. **Correcting the issue's own account: it was recoverable.** Save
-succeeds — a blank amount of `0` passes the validator — so the escape was to write a junk $0 MANUAL
-CHARGE line onto real paper, which `recalculateInvoice` then preserves forever as an addition.
+IT (#281, merged `86ff8b5`, PR #286, squash).** `useBulkGrid` supplies `key`/`isNew` on every
+composed row and `clientId` on every added one, but the composition spread the caller's fields LAST
+— so a `Fields` type declaring one of those names silently overwrote it. Exactly one caller did: the
+invoice grid's `LineFields` declared `key`, and `blankChargeRow` seeded it `""`. Every locally-added
+charge row therefore composed under `key: ""`, which matched no `clientId` — the row could not be
+typed into (`updateAdded("")` patches nothing), could not be removed (`removeAdded("")` filters
+nothing), rendered as a duplicate React key, and held `added.length > 0` forever, which through
+`useUnsavedPresent()` disabled invoice finalize, recalculate and print. **Correcting the issue's own
+account: it was recoverable.** Save succeeds — a blank amount of `0` passes the validator — so the
+escape was to write a junk $0 MANUAL CHARGE line onto real paper, which `recalculateInvoice` then
+preserves forever as an addition.
 
 **Two guards, because they fail differently.** `NoRowIdentity` makes the collision a COMPILE error,
 and the identity now spreads LAST everywhere a row is built. Neither alone is enough: the type guard
