@@ -207,7 +207,15 @@ export function NewShipment() {
    * a page the operator has already left.
    */
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    // Re-armed in the BODY, not just cleared in the cleanup. React double-invokes effects in dev
+    // (mount → cleanup → mount), so a cleanup-only version latches `false` on the first pass and
+    // never recovers: every save then returned early and no shipment page ever opened. CI's E2E
+    // job caught it across ten flows; nothing in the vitest suite could, since this is render
+    // behaviour and there is no component renderer here.
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const customersGate = gate(perms, "customers.view");
   const ordersGate = gate(perms, "orders.view");
