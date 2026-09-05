@@ -4,6 +4,7 @@ import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { rowsAfterSave } from "@/lib/field-drafts";
 import { invalidateHistory } from "@/components/HistoryPanel";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 
 type FieldRow = { fieldId: string; name: string; type: string; sort: number; active: boolean; value: string };
 
@@ -34,6 +35,9 @@ export function CustomFieldsSection({
   }
 
   const dirty = rows.filter((r) => r.value !== (original.get(r.fieldId) ?? ""));
+  // Not a `useBulkGrid`, but the same hazard and the same contract: an explicit Save means a
+  // navigation can discard typed work, so the section declares itself (Codex P1 on #272).
+  useUnsavedSection(dirty.length > 0, "Custom fields");
 
   // Not routed through the optimistic-then-rollback shape the other sections use: nothing here
   // is applied to the UI as if it had already succeeded, so a failed save has nothing to roll

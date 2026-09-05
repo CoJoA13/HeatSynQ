@@ -31,6 +31,7 @@ import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
 import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL } from "@/lib/quote-constants";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 import {
   headerFormFrom, headerPatch, lineFormsFrom, linesComparable, linesPayload,
   type HeaderForm, type LineForm, type LinkedOrderRef, type PriceForm,
@@ -191,6 +192,7 @@ export function QuoteDetail({ id }: { id: string }) {
   const patch = header !== null && baseHeader !== null ? headerPatch(header, baseHeader) : {};
   const linesDirty = detail !== null && linesComparable(lines) !== linesComparable(lineFormsFrom(detail));
   const dirty = Object.keys(patch).length > 0 || linesDirty;
+  useUnsavedSection(dirty, "Quote");
 
   // ---- Gates (§5.16: every gated control disabled WITH the reason, via the shared helper). ----
   const closed = detail?.status === "CLOSED";

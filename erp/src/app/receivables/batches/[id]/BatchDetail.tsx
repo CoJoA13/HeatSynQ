@@ -21,6 +21,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 import {
   RECEIPT_BATCH_STATUS_LABELS, APPLICATION_TYPE_LABELS,
   type ReceiptBatchStatusValue, type ApplicationTypeValue,
@@ -154,6 +155,10 @@ function ApplyPanel({
   const [voidingApplicationId, setVoidingApplicationId] = useState<string | null>(null);
   const latest = useLatest();
   const grid = useBulkGrid<ApplyLineFields>();
+  // The apply panel accumulates typed amounts across invoice rows before Apply is pressed, so
+  // leaving the batch discards real work even though its button gates on row count rather than a
+  // dirty flag.
+  useUnsavedSection(grid.dirty, "Payment application");
 
   // Two reads per open call: the family's open invoices (`?customerId=`), then — per candidate,
   // in parallel — THIS payment's discount OFFER on it (`?paymentId=&invoiceId=`, which also

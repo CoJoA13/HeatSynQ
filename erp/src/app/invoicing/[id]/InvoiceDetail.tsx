@@ -30,6 +30,7 @@ import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
+import { SaveButton } from "@/components/SaveButton";
 import {
   INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS, INVOICE_LINE_KIND_LABELS, PRICE_SOURCE_LABELS,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -431,10 +432,8 @@ function InvoiceLinesGrid({
                 className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           Add charge line
         </button>
-        <button onClick={() => void save()} disabled={!moneyGate.allowed || !grid.dirty} title={moneyGate.title}
-                className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-          Save lines
-        </button>
+        <SaveButton label="Save lines" section="Invoice lines" gate={moneyGate}
+                    dirty={grid.dirty} onSave={() => void save()} />
       </div>
     </section>
   );

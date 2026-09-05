@@ -3,6 +3,7 @@ import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import type { ApplyMutation, ContainerTypeOption, OrderContainer, OrderMutationResult } from "./page";
+import { SaveButton } from "@/components/SaveButton";
 
 type Fields = { typeId: string; count: string; qty: string; tareWeight: string; grossWeight: string; customerContainerId: string };
 
@@ -159,10 +160,8 @@ export function ContainersSection({
                 className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           Add container
         </button>
-        <button onClick={() => void save()} disabled={!editGate.allowed || !grid.dirty} title={editGate.title}
-                className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-          Save containers
-        </button>
+        <SaveButton label="Save containers" section="Containers" gate={editGate}
+                    dirty={grid.dirty} onSave={() => void save()} />
       </div>
     </section>
   );

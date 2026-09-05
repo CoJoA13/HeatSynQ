@@ -32,6 +32,7 @@ import {
 } from "./panels";
 import { LogoPanel } from "./LogoPanel";
 import { PreviewPane } from "./PreviewPane";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 
 // Local mirror of the server read type (a "use client" file must not import src/server/**; the
 // templates-admin page precedent). Dates arrive as ISO strings over JSON.
@@ -55,6 +56,12 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   // the user can re-apply them onto the fresh precondition (the deliberate-overwrite path).
   const [conflict, setConflict] = useState<string | null>(null);
   const [stashed, setStashed] = useState<TemplateConfig | null>(null);
+  // `stashed` counts too (Codex P1, round 6). A 409 rolls the working config back to server truth
+  // and sets `dirty` false, but the edits the failed save tried to write survive in `stashed` for
+  // the "Re-apply my changes" button — so the conflict screen holds recoverable work while the
+  // registry says there is none, and leaving it discarded exactly the edits the banner is offering
+  // to restore. This is registered where `dirty` alone is declared false BY DESIGN.
+  useUnsavedSection(dirty || stashed !== null, "Template");
 
   const { permissions: perms, error: permsError } = usePermissions();
   const canEdit = gate(perms, "templates.edit");

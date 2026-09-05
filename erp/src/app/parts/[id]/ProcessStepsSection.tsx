@@ -9,6 +9,7 @@ import {
   type StepEdits,
 } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 
 // Local mirrors of src/server/part-process-steps.ts's exported row types — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -231,6 +232,20 @@ export function ProcessStepsSection({
   function isDirty(stepId: string): boolean {
     return isStepDirty(originals.get(stepId), edits.get(stepId));
   }
+  // Dirtiness here is PER STEP, but the guard asks one question about the section — so aggregate
+  // over the steps that currently hold edits (Codex P1 on #272 named the shape; the sweep in
+  // tests/unsaved-registration-sweep.test.ts found this instance).
+  //
+  // An edit key with NO entry in the current revision's `originals` counts as dirty on its own
+  // (Codex P2, round 6). `isStepDirty` compares an overlay against its baseline, and after a
+  // revision switch a step edited on the OTHER revision has no baseline here — so an edit that
+  // cleared a value to "" compares equal to an absent default and reads clean, while the overlay
+  // is still held and would reappear on switching back. Held work the comparison cannot see must
+  // fail CLOSED, not read as saved.
+  useUnsavedSection(
+    [...edits.keys()].some((stepId) => !originals.has(stepId) || isDirty(stepId)),
+    "Process steps",
+  );
 
   async function saveStep(stepId: string) {
     const { instruction, values } = pendingChanges(originals.get(stepId), edits.get(stepId));

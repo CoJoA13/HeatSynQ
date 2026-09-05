@@ -33,6 +33,7 @@ import { useLatest } from "@/lib/use-latest";
 import { submitWithConflictRetry } from "@/lib/idempotent-save";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
+import { useUnsavedSection } from "@/lib/use-unsaved-section";
 import {
   LinesGridView, ContainersGridView, SerialsGridView,
   prefillLineRow, prefillContainerRow, prefillSerialRow,
@@ -126,13 +127,20 @@ export function NewShipment() {
   // submitted once. Numeric-ish fields stay strings until the body is built (the wire-shape
   // convention every form in this codebase uses).
   const [shipToAddressId, setShipToAddressId] = useState("");
-  const [shipDate, setShipDate] = useState(() => formatDateOnly(todayDateOnly()));
+
+  // Captured once so the dirty predicate below can tell "the operator chose this date" from
+  // "this is the default the form opened with".
+  const [defaultShipDate] = useState(() => formatDateOnly(todayDateOnly()));
+  const [shipDate, setShipDate] = useState(defaultShipDate);
   const [carrierId, setCarrierId] = useState("");
   const [route, setRoute] = useState("");
   const [comments, setComments] = useState("");
   const [billFreight, setBillFreight] = useState(false);
   const [freightAmount, setFreightAmount] = useState("");
-  const [freightTerms, setFreightTerms] = useState<FreightTermsValue>("PREPAID");
+  // Captured for the same reason as `defaultShipDate`: this control opens on a value, so only a
+  // CHANGE from it is work.
+  const [defaultFreightTerms] = useState<FreightTermsValue>("PREPAID");
+  const [freightTerms, setFreightTerms] = useState<FreightTermsValue>(defaultFreightTerms);
   const [freightClass, setFreightClass] = useState("");
   const [freightDescription, setFreightDescription] = useState("");
   const [packageCount, setPackageCount] = useState("");
@@ -153,6 +161,38 @@ export function NewShipment() {
   // immediate navigate. Zero warnings navigates immediately.
   const [savedShipment, setSavedShipment] =
     useState<{ id: string; shipperNumber: number; warnings: string[] } | null>(null);
+
+  // A whole shipment is drafted here in LOCAL state — the orders picked, their line/container/
+  // serial grids, the header and the freight block — and none of it is persisted anywhere until
+  // "Save shipment". This page has no `dirty` flag, which is why the registration census missed it
+  // (Codex P1 on #272): the draft IS the accumulated state, so "has the operator started one" is
+  // the honest question.
+  //
+  // EVERY editable field counts, not just the picked orders. The header and freight controls are
+  // live before any order is added, so `selected.length > 0` alone discarded a typed carrier,
+  // route, comments, ship-to or freight block without a word — the same silent loss one layer up
+  // (Codex P1, round 5). The customer selector is deliberately NOT in this list: choosing a
+  // customer is how you populate the order picker, so it reads as a filter rather than as work,
+  // and `pickCustomer` guards the reset it performs separately.
+  //
+  // `savedShipment` ends it. Once the shipment exists on the server, `selected` is still populated
+  // but there is nothing left to lose, and prompting there asks the operator to discard work that
+  // is already saved — a false alarm on the screen that just told them it succeeded.
+  const draftStarted =
+    savedShipment === null && (
+      selected.length > 0
+      || shipToAddressId !== "" || carrierId !== "" || route.trim() !== "" || comments.trim() !== ""
+      || shipDate !== defaultShipDate
+      // EVERY field `buildBody` submits, not a sample of them. The first pass listed the ones that
+      // came to mind and left freight terms/description, package count, pro no, SCAC and the
+      // credit-hold reason out — each of them typed work, each of them sent to the server, each of
+      // them silently discarded (Codex P1, round 6). If a field reaches the payload it belongs here.
+      || billFreight || freightAmount.trim() !== "" || freightClass.trim() !== ""
+      || freightTerms !== defaultFreightTerms || freightDescription.trim() !== ""
+      || packageCount.trim() !== "" || proNumber.trim() !== "" || scacCode.trim() !== ""
+      || creditHoldReason.trim() !== ""
+    );
+  useUnsavedSection(draftStarted, "New shipment");
 
   const customersGate = gate(perms, "customers.view");
   const ordersGate = gate(perms, "orders.view");
