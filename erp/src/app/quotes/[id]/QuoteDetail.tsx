@@ -33,6 +33,10 @@ import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-cons
 import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL } from "@/lib/quote-constants";
 import { useUnsavedSection } from "@/lib/use-unsaved-section";
 import {
+  breakDraftStarted as anyBreakDraftStarted, dropBreakDrafts, patchBreakDraft, priceKeysOf,
+  retainBreakDrafts, type BreakDrafts, EMPTY_BREAK_DRAFT,
+} from "@/lib/break-drafts";
+import {
   headerFormFrom, headerPatch, lineFormsFrom, linesComparable, linesPayload,
   type HeaderForm, type LineForm, type LinkedOrderRef, type PriceForm,
   type QuoteCloseResultData, type QuoteDetailData, type QuoteMutationData,
@@ -150,17 +154,29 @@ export function QuoteDetail({ id }: { id: string }) {
   const [overlapWarnings, setOverlapWarnings] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
 
+  // Per-price "add a break" draft, keyed by price KEY (the PricingSection breakDrafts shape).
+  const [breakDrafts, setBreakDrafts] = useState<BreakDrafts>({});
+  const draftFor = (priceKey: string) => breakDrafts[priceKey] ?? EMPTY_BREAK_DRAFT;
+
   // Minted React keys for rows added client-side (their server ids don't exist yet).
   const seq = useRef(0);
   const newKey = () => `new-${++seq.current}`;
 
   /** Adopt a fresh server detail as the form's new baseline — load, save, close/reopen,
-   *  attach-part all land here. Any draft is replaced wholesale, which is why the adopting
-   *  ACTIONS are dirty-locked below (Save itself is the draft's own commit). */
+   *  attach-part all land here. The header and line tree are replaced wholesale, which is why the
+   *  adopting ACTIONS are dirty-locked below (Save itself is the draft's own commit). Break drafts
+   *  are the exception and are INTERSECTED rather than replaced — see the call below. */
   const adopt = useCallback((d: QuoteDetailData) => {
+    const next = lineFormsFrom(d);
     setDetail(d);
     setHeader(headerFormFrom(d));
-    setLines(lineFormsFrom(d));
+    setLines(next);
+    // Every price key was just re-derived from the server, so a draft filed under one that did not
+    // survive can never be reached, blanked or added again — and `breakDraftStarted` counts it
+    // forever (#278). An INTERSECTION, not a reset: close/reopen/attach-part land here too and
+    // change no price id, and they stay enabled with a draft typed because `dirty` below excludes
+    // break drafts — so clearing wholesale would discard real work. See retainBreakDrafts.
+    setBreakDrafts((cur) => retainBreakDrafts(cur, priceKeysOf(next)));
   }, []);
 
   const load = useCallback(async () => {
@@ -320,6 +336,11 @@ export function QuoteDetail({ id }: { id: string }) {
     if (detail === null) return;
     setHeader(headerFormFrom(detail));
     setLines(lineFormsFrom(detail));
+    // "all", not an intersection: this is the operator asking to throw their unsaved work away, and
+    // a typed-but-unadded break is unsaved work. It is also the one control that CAN clear a break
+    // draft, which is why its button below gates on `breakDraftStarted` as well as `dirty` — a
+    // guard with no control able to clear it is what #278 was.
+    setBreakDrafts((cur) => dropBreakDrafts(cur, "all"));
     setError(null);
   }
 
@@ -479,6 +500,12 @@ export function QuoteDetail({ id }: { id: string }) {
     }]);
   }
   function removeLine(key: string) {
+    // Drops EVERY price row on the line, so every one of their break drafts goes too — one level
+    // deeper than removePrice below, and the reason this is not a single-key drop (#278). Read off
+    // the render's `lines` rather than from inside the setLines updater: an updater must stay pure,
+    // and StrictMode double-invokes it in dev.
+    const line = lines.find((l) => l.key === key);
+    if (line !== undefined) setBreakDrafts((cur) => dropBreakDrafts(cur, priceKeysOf([line])));
     setLines((cur) => cur.filter((l) => l.key !== key));
   }
   function moveLine(index: number, dir: -1 | 1) {
@@ -512,6 +539,9 @@ export function QuoteDetail({ id }: { id: string }) {
   function removePrice(lineKey: string, priceKey: string) {
     setLines((cur) => cur.map((l) => (l.key === lineKey
       ? { ...l, prices: l.prices.filter((p) => p.key !== priceKey) } : l)));
+    // The removed row's own break draft goes with it: its Add-break inputs are unmounted with the
+    // row, so nothing on screen could blank it again (#278).
+    setBreakDrafts((cur) => dropBreakDrafts(cur, [priceKey]));
   }
   function movePrice(lineKey: string, index: number, dir: -1 | 1) {
     setLines((cur) => cur.map((l) => {
@@ -551,10 +581,6 @@ export function QuoteDetail({ id }: { id: string }) {
       }
       : l)));
   }
-  // Per-price "add a break" draft, keyed by price KEY (the PricingSection breakDrafts shape).
-  const [breakDrafts, setBreakDrafts] = useState<Record<string, { threshold: string; price: string }>>({});
-  const draftFor = (priceKey: string) => breakDrafts[priceKey] ?? { threshold: "", price: "" };
-
   // Registered HERE rather than beside `dirty` above, because a break draft is real work that
   // `dirty` cannot see: `dirty` diffs the header and `lines` against the loaded detail, and a
   // threshold/price typed into the Add break controls does not reach `lines` until Add break is
@@ -563,8 +589,9 @@ export function QuoteDetail({ id }: { id: string }) {
   // file-registers-therefore-covered blind spot the per-flag assertion closed for Save buttons.
   // `dirty` itself is left alone: it answers "does the server disagree with this form", which is
   // what the Save and print gates need, and an unadded break changes neither.
-  const breakDraftStarted =
-    Object.values(breakDrafts).some((d) => d.threshold.trim() !== "" || d.price.trim() !== "");
+  // Content, not key count: an input typed into and then cleared leaves a blank entry behind. The
+  // pruners above are what keep an ORPHANED one from arming this forever (#278).
+  const breakDraftStarted = anyBreakDraftStarted(breakDrafts);
   useUnsavedSection(dirty || breakDraftStarted, "Quote");
   function addBreak(lineKey: string, priceKey: string) {
     const draft = draftFor(priceKey);
@@ -577,7 +604,7 @@ export function QuoteDetail({ id }: { id: string }) {
           : p)),
       }
       : l)));
-    setBreakDrafts((cur) => ({ ...cur, [priceKey]: { threshold: "", price: "" } }));
+    setBreakDrafts((cur) => dropBreakDrafts(cur, [priceKey]));
   }
   function removeBreak(lineKey: string, priceKey: string, breakKey: string) {
     setLines((cur) => cur.map((l) => (l.key === lineKey
@@ -949,11 +976,11 @@ export function QuoteDetail({ id }: { id: string }) {
                 <div className="flex gap-2">
                   <input value={draftFor(price.key).threshold} placeholder="Threshold" inputMode="decimal"
                          disabled={editGate.disabled} title={editGate.title}
-                         onChange={(e) => setBreakDrafts((cur) => ({ ...cur, [price.key]: { ...draftFor(price.key), threshold: e.target.value } }))}
+                         onChange={(e) => setBreakDrafts((cur) => patchBreakDraft(cur, price.key, "threshold", e.target.value))}
                          className="w-24 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
                   <input value={draftFor(price.key).price} placeholder="Price" inputMode="decimal"
                          disabled={editGate.disabled} title={editGate.title}
-                         onChange={(e) => setBreakDrafts((cur) => ({ ...cur, [price.key]: { ...draftFor(price.key), price: e.target.value } }))}
+                         onChange={(e) => setBreakDrafts((cur) => patchBreakDraft(cur, price.key, "price", e.target.value))}
                          className="w-24 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
                   <button type="button" onClick={() => addBreak(line.key, price.key)}
                           disabled={editGate.disabled || !draftFor(price.key).threshold || !draftFor(price.key).price}
@@ -1083,9 +1110,14 @@ export function QuoteDetail({ id }: { id: string }) {
         <div className="mb-2 flex items-center justify-between">
           <h2 className="font-medium">Header</h2>
           <div className="flex items-center gap-3">
+            {/* Deliberately NOT `|| breakDraftStarted`, the SaveButton `alsoUnsaved` precedent: a
+                started break is work Save cannot send, so badging it beside a disabled Save reads
+                as a broken control — and unlike an orphan it is still sitting visible in its own
+                input. Discard beside it DOES gate on it, because that is the control able to
+                clear it. */}
             {dirty && <span className="text-xs text-amber-700">Unsaved changes</span>}
-            <button onClick={discardChanges} disabled={!dirty}
-                    title={dirty ? undefined : "No unsaved changes"}
+            <button onClick={discardChanges} disabled={!dirty && !breakDraftStarted}
+                    title={dirty || breakDraftStarted ? undefined : "No unsaved changes"}
                     className="text-sm text-slate-600 underline disabled:cursor-not-allowed disabled:text-slate-300 disabled:no-underline">
               Discard changes
             </button>
