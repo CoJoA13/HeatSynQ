@@ -61,8 +61,9 @@ merged is a pointer. Do not append a new phase narrative here — this file is t
 every fresh session and has to stay readable in one pass.
 
 **2026-09-05 (second pass) — A BULK GRID IS DIRTY WHEN IT DIFFERS FROM THE SERVER, NOT WHEN AN
-OVERLAY EXISTS (#279).** `useBulkGrid`'s `dirty` was `edits.size > 0 || added.length > 0 ||
-removedIds.size > 0` under a docstring promising "anything a Save button would actually send that
+OVERLAY EXISTS (#279, merged `8007e19`, PR #284, squash).** `useBulkGrid`'s `dirty` was
+`edits.size > 0 || added.length > 0 || removedIds.size > 0` under a docstring promising "anything a
+Save button would actually send that
 **differs** from server state as loaded". It measured overlay cardinality, so editing a cell and
 typing the original value back left the row in `edits` and the grid reporting dirty. Harmless while
 it only left a Save button enabled; since #272 the same flag drives the "Unsaved changes" badge, the
@@ -105,7 +106,8 @@ carry no `key`.
 
 Gates: **3829 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. No manual re-capture.
 
-**2026-09-05 — A STARTED QUANTITY BREAK NO LONGER STRANDS THE QUOTE PAGE AS UNSAVED (#278).**
+**2026-09-05 — A STARTED QUANTITY BREAK NO LONGER STRANDS THE QUOTE PAGE AS UNSAVED (#278,
+merged `88310af`, PR #280, squash).**
 The unsaved-edit guard below registers a typed-but-unadded price break, because it is real work
 `dirty` cannot see. Nothing pruned the record it lives in, so a draft whose price row was then
 removed kept the page registered unsaved for the life of the mount, with **no control able to clear
