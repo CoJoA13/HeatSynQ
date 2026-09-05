@@ -154,7 +154,7 @@ function ApplyPanel({
   const [applying, setApplying] = useState(false);
   const [voidingApplicationId, setVoidingApplicationId] = useState<string | null>(null);
   const latest = useLatest();
-  const grid = useBulkGrid<ApplyLineFields>();
+  const grid = useBulkGrid(candidates, toApplyFields);
   // The apply panel accumulates typed amounts across invoice rows before Apply is pressed, so
   // leaving the batch discards real work even though its button gates on row count rather than a
   // dirty flag.
@@ -191,7 +191,7 @@ function ApplyPanel({
   }, [payment.customerId, payment.id, latest]);
   useEffect(() => { void load(); }, [load]);
 
-  const rows = grid.compose(candidates, toApplyFields);
+  const rows = grid.rows;
 
   function patchRow(row: { key: string }, patch: Partial<ApplyLineFields>) {
     grid.updateExisting(row.key, patch);

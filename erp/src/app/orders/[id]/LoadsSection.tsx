@@ -43,12 +43,12 @@ export function LoadsSection({
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<Fields>();
-  const rows = grid.compose(loads, (l) => ({
+  const grid = useBulkGrid(loads, (l): Fields => ({
     loadNumber: String(l.loadNumber),
     qty: l.qty === null ? "" : String(l.qty),
     weight: l.weight === null ? "" : String(l.weight),
   }));
+  const rows = grid.rows;
 
   function patch(row: { key: string; isNew: boolean }, field: keyof Fields, value: string) {
     if (row.isNew) grid.updateAdded(row.key, { [field]: value } as Partial<Fields>);
@@ -67,6 +67,14 @@ export function LoadsSection({
   function renumber() {
     const byKey = new Map(rows.map((r, i) => [r.key, String(i + 1)]));
     for (const row of rows) patch(row, "loadNumber", byKey.get(row.key)!);
+    // Clearing the banner is part of the action, not a courtesy. `buildPayload` refuses a list
+    // whose numbers are not 1..N by NAMING this control, and nothing else clears that message
+    // except a successful save — but renumbering assigns by position, so it always satisfies the
+    // complaint, and since #279 it may satisfy it by writing values the server already holds,
+    // which leaves nothing to save and disables the Save button. Without this, following the
+    // instruction the error gives would grey out the only control it mentions while the error
+    // still stood. Any OTHER validation message returns on the next save attempt.
+    onError(null);
   }
 
   function buildPayload(): { loadNumber: number; qty: number | null; weight: string | null }[] | null {

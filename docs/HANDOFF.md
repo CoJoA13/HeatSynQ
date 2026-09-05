@@ -60,6 +60,51 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 (second pass) — A BULK GRID IS DIRTY WHEN IT DIFFERS FROM THE SERVER, NOT WHEN AN
+OVERLAY EXISTS (#279).** `useBulkGrid`'s `dirty` was `edits.size > 0 || added.length > 0 ||
+removedIds.size > 0` under a docstring promising "anything a Save button would actually send that
+**differs** from server state as loaded". It measured overlay cardinality, so editing a cell and
+typing the original value back left the row in `edits` and the grid reporting dirty. Harmless while
+it only left a Save button enabled; since #272 the same flag drives the "Unsaved changes" badge, the
+navigation prompt, and — through `useUnsavedPresent()` — every gate that REFUSES over a dirty
+editor. So a revert-to-original disabled invoice finalize/recalculate/print (`InvoiceDetail:511`),
+shipment ticket/BOL print (`ShipmentDetail:405`) **and the order hub's traveler print**
+(`DocumentsSection:120`, whose exclusion list is `["Serials","Charges"]`, so Containers and Loads
+both arm it) with a message asserting changes that did not exist. Exactly the prompt
+`unsaved-guard.ts` says people learn to click through.
+
+**A PRUNE, not a narrowed predicate — the same lesson as #278 above.** Leaving the no-op entry in
+`edits` and merely not counting it would keep `compose` spreading it over the server row it equals:
+invisible, unclearable (Save is disabled, and Save is the only caller of `reset`), and re-arming
+with no user action the moment another actor changed that row, because `detectOrphans` returns early
+while the id set is unchanged. `mergeEdit` therefore drops every field equal to the server's and
+returns `undefined` when nothing is left, so `updateExisting` deletes the entry — "nothing to send"
+and "nothing overlaid" become one state, and the existing `dirty` expression becomes true as
+written. Compared as strings, exactly: composed values are what the PUT carries, callers disagree
+about trimming, and `"5.00"` over a server `5` is a real difference. `added`/`removedIds` are
+deliberately untouched — every consumer PUTs the whole array, so neither can be a no-op.
+
+**The hook now takes `(serverRows, toFields)` and returns `rows`** — an API change at 9 call sites
+in 7 files. It has to: `dirty` must be answered from the SAME baseline the grid renders from, and
+the receivables apply panel reads `grid.dirty` 33 lines before it would have called `compose`. Two
+supply sites for one server array is how the two answers drift apart, which is this defect's shape;
+a source sweep in `tests/bulk-grid.test.ts` now fails any consumer that re-supplies them. One
+user-visible consequence, and it needed its own fix: Loads' Renumber writes each row's position, so
+on an already-1..N list it is now a no-op — and `buildPayload` refuses an out-of-range list by
+*naming Renumber*, with nothing but a successful save clearing that banner. Following the
+instruction would have greyed out the only control it mentions, so `renumber()` clears the banner it
+answers.
+
+**Found while designing this: #281**, a live defect it deliberately does NOT fix. `InvoiceDetail`'s
+`LineFields` declares its own `key`, `blankChargeRow` sets it `""`, and `compose` spreads the
+caller's fields last — so every added charge row composes with `key === ""`, cannot be typed into or
+removed (`updateAdded("")` matches nothing), and keeps the grid dirty forever, permanently disabling
+finalize/recalculate/print. The spread order is pinned unchanged by a test that says so and says to
+delete itself when #281 lands, because behaviour cannot see spread order when a fixture's fields
+carry no `key`.
+
+Gates: **3829 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. No manual re-capture.
+
 **2026-09-05 — A STARTED QUANTITY BREAK NO LONGER STRANDS THE QUOTE PAGE AS UNSAVED (#278).**
 The unsaved-edit guard below registers a typed-but-unadded price break, because it is real work
 `dirty` cannot see. Nothing pruned the record it lives in, so a draft whose price row was then

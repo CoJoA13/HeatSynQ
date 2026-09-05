@@ -108,12 +108,50 @@ export function appendRows<Fields extends Record<string, string>>(
 }
 
 /**
+ * Merges one patch into an existing row's overlay and DROPS every field that matches the server
+ * row's own value — returning `undefined` when nothing is left, i.e. the row is no longer edited.
+ *
+ * The pure decision behind `updateExisting`, extracted so it can be mutation-tested without a
+ * component harness (the `computeOrphanChurn` / `appendRows` precedent above).
+ *
+ * Pruning, not merely ignoring (#279). Narrowing the `dirty` PREDICATE alone would leave the no-op
+ * entry in the overlay, where `compose` still spreads it over the server row it equals — invisible,
+ * unclearable (Save is disabled, and Save is the only thing that calls `reset`), and it re-arms
+ * without any user action the moment another actor changes that row underneath it, because
+ * `detectOrphans` returns early while the id set is unchanged. Removing the entry is what makes
+ * "nothing to send" and "nothing overlaid" the same state. It also matches the settled answer in
+ * `field-drafts.ts`: a field typed away and back to the server's value is no longer the user's, and
+ * the server's copy shows through.
+ *
+ * Compared as STRINGS, exactly — never trimmed, never through `Number`. Composed values are the
+ * strings the PUT carries (see the `Fields` note below), so `"5.00"` typed over a server `5` is a
+ * real difference, and callers deliberately differ on trimming (`SerialsSection` trims `serial` at
+ * save but sends `description` untrimmed), so a normalising comparison here would report a genuine
+ * payload difference clean.
+ *
+ * The whole merged overlay is re-checked, not just the incoming patch's keys: a caller may write
+ * several fields at once (the invoice grid stamps `priceSource`/`needsPrice` alongside an amount),
+ * and a field left over from an earlier keystroke can be the one that just became equal.
+ */
+export function mergeEdit<Fields extends Record<string, string>>(
+  current: Partial<Fields> | undefined, patch: Partial<Fields>, base: Fields,
+): Partial<Fields> | undefined {
+  const merged = { ...current, ...patch } as Partial<Fields>;
+  for (const key of Object.keys(merged) as (keyof Fields)[]) {
+    if (merged[key] === base[key]) delete merged[key];
+  }
+  return Object.keys(merged).length === 0 ? undefined : merged;
+}
+
+/**
  * `Fields` is the flat, string-valued shape a grid's inputs are bound to (e.g. containers'
  * `{ typeId, count, qty, tareWeight, grossWeight }` — every value a plain string, same wire-shape
  * convention the order entry page uses throughout: what a text input can hold, converted to the
  * server's numbers/decimals only when a Save actually builds the request body).
  */
-export function useBulkGrid<Fields extends Record<string, string>>() {
+export function useBulkGrid<Row extends BulkRow, Fields extends Record<string, string>>(
+  serverRows: readonly Row[], toFields: (row: Row) => Fields,
+) {
   const [edits, setEdits] = useState<Map<string, Partial<Fields>>>(new Map());
   const [added, setAdded] = useState<AddedRow<Fields>[]>([]);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
@@ -129,12 +167,22 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   const [lastLiveIds, setLastLiveIds] = useState<Set<string> | null>(null);
   const [orphanWarning, setOrphanWarning] = useState<string | null>(null);
 
-  /** Patches one EXISTING row's overlay — only the fields actually passed are recorded, so a
-   *  field nobody touched keeps showing server truth via `compose` below. */
+  /** Patches one EXISTING row's overlay — only the fields actually passed are recorded, so a field
+   *  nobody touched keeps showing server truth through `rows` below, and only the fields that
+   *  actually DIFFER from that row are kept (`mergeEdit`). Typing a value back to the server's
+   *  therefore leaves the row unedited rather than merely un-dirty (#279). */
   function updateExisting(id: string, patch: Partial<Fields>) {
+    // Read outside the updater: an updater must stay pure, and StrictMode double-invokes it.
+    const row = serverRows.find((r) => r.id === id);
     setEdits((cur) => {
       const next = new Map(cur);
-      next.set(id, { ...next.get(id), ...patch });
+      // No server row to compare against — an edit whose id has churned away, before
+      // `detectOrphans` has seen the new set. Held work the comparison cannot see fails CLOSED and
+      // is kept whole, the `ProcessStepsSection` direction; the orphan sweep clears it properly.
+      const merged = row === undefined
+        ? ({ ...next.get(id), ...patch } as Partial<Fields>)
+        : mergeEdit(next.get(id), patch, toFields(row));
+      if (merged === undefined) next.delete(id); else next.set(id, merged);
       return next;
     });
   }
@@ -190,9 +238,19 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
     setOrphanWarning(null);
   }
 
-  /** Whether there is anything a Save button would actually send that differs from server state
-   *  as loaded — an empty overlay (nothing edited, added, or removed) means the button has
-   *  nothing to do yet. */
+  /**
+   * Whether there is anything a Save button would actually send that differs from server state as
+   * loaded.
+   *
+   * This expression only earns that sentence because `updateExisting` prunes: an `edits` entry now
+   * exists only while some field genuinely differs, so an overlay that is non-empty is an overlay
+   * that changes something (#279 — before that it meant "an overlay exists", and a revert to the
+   * original value still armed the badge, the navigation prompt, and every gate that refuses over a
+   * dirty editor). `added` and `removedIds` need no such treatment and deliberately get none: every
+   * consumer PUTs the whole composed array, so an added row is always an extra element and a
+   * removal always a shorter one — neither can be a no-op, and comparing an added row against a
+   * blank template would hide a deliberately empty row from the guard.
+   */
   const dirty = edits.size > 0 || added.length > 0 || removedIds.size > 0;
 
   /**
@@ -245,25 +303,33 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   }
 
   /**
-   * The composed, render-ready row list: live server rows (skipping any marked removed, each
-   * mapped through `toFields` and then overlaid with whatever edit exists for its id) followed by
-   * locally-added rows in the order they were added. Recomputed fresh on every call — nothing
-   * here is memoized state of its own, so it can never itself go stale; call it from the render
-   * body (optionally wrapped in the caller's own `useMemo` if the row count ever gets large).
+   * The composed, render-ready row list: live server rows (skipping any marked removed, each mapped
+   * through `toFields` and then overlaid with whatever edit exists for its id) followed by
+   * locally-added rows in the order they were added.
+   *
+   * Derived here rather than returned as a `compose(serverRows, toFields)` method the caller
+   * invokes, because `dirty` above has to be answered from the SAME baseline this renders from, and
+   * one consumer reads `dirty` well before it would have called `compose` (the receivables apply
+   * panel registers with the unsaved guard immediately after the hook call). Two supply sites for
+   * the same server rows is how the two answers drift apart, which is #279's shape.
+   *
+   * Recomputed fresh on every render — nothing here is memoized state of its own, so it can never
+   * itself go stale.
    */
-  function compose<Row extends BulkRow>(
-    serverRows: readonly Row[], toFields: (row: Row) => Fields,
-  ): ComposedRow<Fields>[] {
-    detectOrphans(serverRows);
-    const existing: ComposedRow<Fields>[] = serverRows
+  detectOrphans(serverRows);
+  const rows: ComposedRow<Fields>[] = [
+    ...serverRows
       .filter((r) => !removedIds.has(r.id))
-      .map((r) => ({ key: r.id, isNew: false, ...toFields(r), ...(edits.get(r.id) ?? {}) }));
-    const addedRows: ComposedRow<Fields>[] = added.map((a) => ({ key: a.clientId, isNew: true, ...a }));
-    return [...existing, ...addedRows];
-  }
+      .map((r) => ({ key: r.id, isNew: false, ...toFields(r), ...(edits.get(r.id) ?? {}) })),
+    // Spread order preserved verbatim: a caller whose `Fields` declares its own `key` shadows the
+    // composed one. That is a live defect for exactly one caller (#281, the invoice grid's added
+    // charge rows) and fixing it here would smuggle an unrelated behaviour change into #279 —
+    // pinned unchanged by a test rather than left to chance.
+    ...added.map((a) => ({ key: a.clientId, isNew: true, ...a })),
+  ];
 
   return {
-    edits, added, removedIds, dirty, orphanWarning,
-    updateExisting, updateAdded, removeExisting, removeAdded, addRow, addRows, reset, compose,
+    edits, added, removedIds, dirty, orphanWarning, rows,
+    updateExisting, updateAdded, removeExisting, removeAdded, addRow, addRows, reset,
   };
 }
