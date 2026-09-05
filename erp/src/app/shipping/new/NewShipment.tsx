@@ -33,7 +33,7 @@ import { useLatest } from "@/lib/use-latest";
 import { submitWithConflictRetry } from "@/lib/idempotent-save";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
-import { useUnsavedSection } from "@/lib/use-unsaved-section";
+import { useUnsavedSection, confirmDiscard } from "@/lib/use-unsaved-section";
 import {
   LinesGridView, ContainersGridView, SerialsGridView,
   prefillLineRow, prefillContainerRow, prefillSerialRow,
@@ -288,6 +288,17 @@ export function NewShipment() {
 
   function pickCustomer(id: string) {
     if (id === customerId) return;
+    // Switching customer resets `selected` — every picked order and its line/container/serial
+    // draft — and that is a destruction with no click on a link and no unload, so no Shell guard
+    // sees it (Codex P1, round 5; the same shape as the receivables apply-panel collapse). Ask
+    // first. The select is CONTROLLED by `customerId`, so returning here leaves it showing the
+    // customer the operator actually still has.
+    // Everything this reset DESTROYS, not just the orders: it also clears the ship-to and the
+    // credit-hold override reason, so typing either with no order added yet was wiped without
+    // a word (Codex P2, round 6). The condition has to name the same state the reset does.
+    const customerOwnedWork =
+      selected.length > 0 || shipToAddressId !== "" || creditHoldReason.trim() !== "";
+    if (customerOwnedWork && !confirmDiscard()) return;
     setCustomerId(id);
     // Everything downstream of the customer is that customer's own data — a switch resets it all
     // (orders selected, ship-to, the override reason). Header text fields are customer-neutral
@@ -352,7 +363,28 @@ export function NewShipment() {
     }
   }
 
+  /**
+   * Drops an order and everything drafted under it — its line, container and serial grids, all of
+   * which live in `selected` and nowhere else. There is no undo and no reload that brings them
+   * back, and re-adding the order returns the PREFILL, not what the operator typed.
+   *
+   * So it asks, unconditionally (Codex P1 on #272). Unconditionally because the panel always holds
+   * rows: `addOrder` prefills every line to `ordered − shipped`, so "has the operator customised
+   * this" cannot be read off the state without diffing against a prefill that is itself derived.
+   * The customer-switch guard nearby gates on `customerOwnedWork` for the opposite reason —
+   * switching customer is routinely done before any work exists, while removing a specific order
+   * is a deliberate act on a panel that by construction has content.
+   *
+   * Its own wording, not `confirmDiscard`'s: the shared prompt asks about LEAVING THE PAGE, which
+   * is not what this does, and a prompt that misdescribes its own action is the kind people learn
+   * to dismiss.
+   */
   function removeOrder(orderId: string) {
+    const order = selected.find((o) => o.orderId === orderId);
+    if (order && !confirm(
+      `Remove order ${order.orderNumber} from this shipment?\n\n` +
+      "Its lines, containers and serials on this draft are discarded — re-adding the order starts " +
+      "from the prefilled quantities again.")) return;
     setSelected((cur) => cur.filter((o) => o.orderId !== orderId));
   }
 

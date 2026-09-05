@@ -5,6 +5,19 @@ import { api, ApiError } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import type { OrderLoad } from "./page";
+import { useUnsavedPresent } from "@/lib/use-unsaved-section";
+
+/**
+ * Order-hub sections whose edits CANNOT change a traveler, so an unsaved one must not block the
+ * print. `readTravelerData` (src/server/traveler.ts) builds the sheet from the order's lines, its
+ * containers and its loads — serials and charges appear nowhere in that payload, and the page-wide
+ * predicate was disabling both print actions over them (Codex P2 on #272).
+ *
+ * Module-level so the hook's snapshot closure has a stable operand, and a DENY list so a section
+ * that is renamed or newly added still blocks until someone decides otherwise — see
+ * `unsavedPresentExcluding`.
+ */
+const NOT_PRINTED_ON_A_TRAVELER = ["Serials", "Charges"] as const;
 
 /** Mirrors `DocumentMeta` (src/server/documents.ts, Phase 4 Task 3) — a local type, not an
  *  import, for the usual reason (CLAUDE.md): a client component pulling from src/server/** drags
@@ -100,9 +113,16 @@ export function DocumentsSection({
 
   // Printing is disabled on a voided order (spec §5c: new prints refused, stored prints stay
   // readable), and on a caller without orders.view — disabled with a tooltip, never hidden (§5.16).
+  // The order hub's grids are registered editors, and `readTravelerData` reads the SERVER's lines,
+  // containers and loads — so a traveler printed over an unsaved one of THOSE archives quantities
+  // the screen does not show (Codex P1, round 7). Serials and charges are not on the paper, so
+  // they are excluded rather than left to block a print they cannot affect (Codex P2, round 8).
+  const unsavedGrids = useUnsavedPresent(NOT_PRINTED_ON_A_TRAVELER);
   const printGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Order is voided — stored prints stay available" }
-    : viewGate;
+    : unsavedGrids
+      ? { allowed: false, disabled: true, title: "Save the changes first — a print archives what the server holds" }
+      : viewGate;
 
   const print = useCallback(async (loadNumber?: number) => {
     setPrinting(true);

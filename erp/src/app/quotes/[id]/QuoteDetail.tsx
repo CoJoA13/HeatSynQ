@@ -224,9 +224,14 @@ export function QuoteDetail({ id }: { id: string }) {
   // InvoiceDetail printGate / traveler-print precedent: printing is a read of the document, and
   // the one state that refuses a NEW print is a voided owner — the server's shared VOIDED_PRINT
   // guard; a CLOSED or expired quote still prints the agreement it records).
+  // Sixth path on the archival rule (Codex P1, round 7). `printQuote` posts no header or line
+  // draft, so the endpoint renders and ARCHIVES a document built from server state — a stored
+  // quote that disagrees with what the operator is looking at.
   const printGate: Gate = deleted
     ? { allowed: false, disabled: true, title: "Quote is deleted — nothing to print" }
-    : gate(perms, "quotes.view");
+    : dirty
+      ? { allowed: false, disabled: true, title: "Save the changes first — a print archives what the server holds" }
+      : gate(perms, "quotes.view");
 
   // Compound picker gates (the PricingSection two-gate precedent): the control needs quotes.edit
   // AND the permission its options ride on; the title names whichever is actually the blocker.

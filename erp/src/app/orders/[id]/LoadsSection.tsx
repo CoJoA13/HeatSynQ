@@ -4,6 +4,7 @@ import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import type { ApplyMutation, OrderLoad, OrderMutationResult } from "./page";
 import { SaveButton } from "@/components/SaveButton";
+import { confirmDiscard } from "@/lib/use-unsaved-section";
 
 type Fields = { loadNumber: string; qty: string; weight: string };
 
@@ -180,7 +181,12 @@ export function LoadsSection({
                 className="rounded border border-slate-800 px-3 py-1 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
           Renumber
         </button>
-        <button onClick={() => void resplit()} disabled={!editGate.allowed} title={editGate.title}
+        {/* Re-split POSTS a freshly computed load set and then resets the grid, so a pending
+            quantity, weight, addition or removal is replaced rather than saved — an in-page
+            destruction with no click on a link and no unload, so no Shell guard sees it
+            (Codex P1, round 7; the apply-panel-collapse shape). It asks first. */}
+        <button onClick={() => { if (confirmDiscard()) void resplit(); }}
+                disabled={!editGate.allowed} title={editGate.title}
                 className="rounded border border-slate-800 px-3 py-1 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
           Re-split
         </button>

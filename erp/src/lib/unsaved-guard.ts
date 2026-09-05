@@ -122,6 +122,22 @@ export function leavesCurrentPage(path: string, currentPath: string): boolean {
   return path !== "" && path !== currentPath;
 }
 
+/**
+ * Whether anything OUTSIDE `ignoreLabels` is holding unsaved edits.
+ *
+ * A DENY list, not an allow list, and that direction is the whole point. The traveler print gate
+ * needs "is anything the traveler actually prints unsaved" — `readTravelerData` reads order lines,
+ * containers and loads, and never serials or charges, so a dirty Charges grid was disabling a print
+ * it cannot affect (Codex P2 on #272). Naming the sections that DO matter would fail OPEN the day
+ * someone renames one or adds a grid: the gate would silently stop covering it. Naming the ones
+ * that provably do not means an unrecognised section still blocks, and the failure is a spurious
+ * refusal someone notices rather than filed paper nobody does.
+ */
+export function unsavedPresentExcluding(ignoreLabels: readonly string[]): boolean {
+  for (const label of dirtySections.values()) if (!ignoreLabels.includes(label)) return true;
+  return false;
+}
+
 /** The prompt. It NAMES the sections at risk: "you have unsaved changes" is the wording everyone
  *  clicks through, and the section name is the difference between a warning and a speed bump. */
 export function confirmMessage(labels: string[]): string {

@@ -31,6 +31,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { SaveButton } from "@/components/SaveButton";
+import { useUnsavedPresent } from "@/lib/use-unsaved-section";
 import {
   INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS, INVOICE_LINE_KIND_LABELS, PRICE_SOURCE_LABELS,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -501,11 +502,20 @@ export function InvoiceDetail({ id }: { id: string }) {
   };
   const moneyGate = statusLocked(moneyGateRaw, finalized, discarded);
 
+  // Unsaved line edits BLOCK the finalize (Codex P1, round 5). Finalize freezes the lines the
+  // SERVER holds — it sends nothing local — so running it over an unsaved grid raises paper from
+  // the previously saved lines while the operator is looking at different ones. Worse, the
+  // finalized status that comes back disables the grid's own Save, so the local overlay is
+  // stranded: it can no longer be committed, and the invoice is already issued. Refusing is the
+  // only order of events that leaves the operator somewhere they can act from.
+  const unsavedLines = useUnsavedPresent();
   const finalizeGate: Gate = discarded
     ? { allowed: false, disabled: true, title: "Invoice is discarded" }
     : finalized
       ? { allowed: false, disabled: true, title: "Already finalized" }
-      : gate(perms, "invoicing.edit");
+      : unsavedLines
+        ? { allowed: false, disabled: true, title: "Save the line changes first — finalize freezes what the server holds" }
+        : gate(perms, "invoicing.edit");
   const unlockGate: Gate = !finalized
     ? { allowed: false, disabled: true, title: "That invoice is not finalized — there is nothing to unlock" }
     : gateDo(perms, "unlock_invoice");
@@ -523,9 +533,15 @@ export function InvoiceDetail({ id }: { id: string }) {
   // re-derives from the order at ordinary POSITIVE prices, which has no meaning for a credit and
   // would overwrite its negated lines. Kind check takes precedence over moneyGate's own reasons,
   // same shape as `creditGate` above.
+  // Recalculate is the other shape of this hazard (Codex P1, round 7): not an archive but a
+  // REPLACE. `recalculateInvoice` deletes and recreates the whole line set, so every existing row
+  // id disappears and `useBulkGrid` drops the pending edit and removal overlays as orphans —
+  // silently discarding typed MONEY. Same refusal.
   const recalcGate: Gate = invoice && invoice.kind === "CREDIT"
     ? { allowed: false, disabled: true, title: "A credit cannot be recalculated" }
-    : moneyGate;
+    : unsavedLines
+      ? { allowed: false, disabled: true, title: "Save the line changes first — a recalculate replaces every line" }
+      : moneyGate;
   // Print (Task 19 — the route does not exist yet and 404s until then, per task-18-brief.md's
   // explicit license). Gated on the area's OWN .view permission, locked by "discarded" rather
   // than "finalized" (a finalized invoice prints — the stored-PDF case is the whole point) — the
@@ -533,9 +549,15 @@ export function InvoiceDetail({ id }: { id: string }) {
   // printing on `<area>.view`, not `.edit`, and lock it only on the state that makes a NEW print
   // meaningless (voided there, discarded here — nothing to print from and nothing was ever
   // printed to fall back on).
+  // Unsaved lines block PRINTING as well as finalizing (Codex P1, round 6). Gating only finalize
+  // was half a fix: `printInvoice` sends no grid overlay either, so the endpoint renders and
+  // ARCHIVES the server-side invoice — permanently filing a document that shows the old lines
+  // while the screen shows the draft ones. Same hazard, same refusal.
   const printGate: Gate = discarded
     ? { allowed: false, disabled: true, title: "Invoice is discarded — nothing to print" }
-    : gate(perms, "invoicing.view");
+    : unsavedLines
+      ? { allowed: false, disabled: true, title: "Save the line changes first — a print archives what the server holds" }
+      : gate(perms, "invoicing.view");
   const docsGate = gate(perms, "invoicing.view");
 
   // Discarded banner's reason — the order hub / ShipmentDetail `voidReason` precedent. Safe to
