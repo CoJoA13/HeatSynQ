@@ -446,6 +446,38 @@ describe("part process steps: the revision-cut rule", () => {
     expect(unchanged.steps.map((s) => s.position)).toEqual([1, 2, 3]);
   });
 
+  // #283: `workingRevision` copies EVERY step of a locked revision — it cannot know why it was
+  // called — so on the cut branch the map it builds carries the step `removeStep` is about to
+  // delete. Returning that entry advertises a mapping onto a row this very transaction hard-deleted,
+  // and the process editor followed it: the removed step's unsaved draft was re-keyed onto the dead
+  // copy, after which nothing on screen could reach or clear it and the page stayed registered
+  // unsaved for good.
+  //
+  // The everyday reachability is what makes it worth a DB-level assertion rather than a client
+  // one: an order save locks the part's current revision (`lockCurrentRevision`, order-create.ts),
+  // so for any part that has ever been ordered this IS the branch a removal takes.
+  it("removeStep's cut mapping never names the step it deleted", async () => {
+    const { part, code } = await fixture();
+    const doomed = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "doomed" }));
+    const keeper = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "keeper" }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+
+    const res = await asSystem(() => removeStep(part.id, doomed.stepId));
+    expect(res.revisionNumber, "removing from a locked revision must cut N+1").toBe(2);
+
+    // The removed step is absent from the mapping — mutation-proof: delete the prune in
+    // `removeStep` and this key is present, pointing at the copy the same transaction deleted.
+    expect(Object.keys(res.stepIdMap)).not.toContain(doomed.stepId);
+
+    // ...and the survivor is still mapped, onto a step that really exists on the new revision.
+    // Without this half the assertion above would pass on a `stepIdMap: {}` that dropped everyone's
+    // drafts — the Codex PR #22 regression the mapping exists to prevent.
+    expect(Object.keys(res.stepIdMap)).toContain(keeper.stepId);
+    const rev2 = await getRevision(part.id, 2);
+    expect(rev2.steps.map((st) => st.id)).toContain(res.stepIdMap[keeper.stepId]);
+    expect(rev2.steps).toHaveLength(1);
+  });
+
   it("removeStep closes the position gap", async () => {
     const { part, code } = await fixture();
     const s1 = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "one" }));

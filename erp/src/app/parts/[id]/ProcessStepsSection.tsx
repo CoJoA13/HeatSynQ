@@ -7,6 +7,7 @@ import { swapAt } from "@/lib/reorder";
 import {
   buildStepOriginals, editsAfterSave, isStepDirty, pendingChanges, shownInstruction, shownValue,
   type StepEdits,
+  dropStepEdits, remapStepEdits, stepEditsAfterRemoval,
 } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 import { useUnsavedSection } from "@/lib/use-unsaved-section";
@@ -179,22 +180,11 @@ export function ProcessStepsSection({
    * from the map alone. So the caller that knows what it destroyed says so.
    */
   function dropDrafts(stepIds: string[] | "all") {
-    setEdits((cur) => {
-      if (stepIds === "all") return cur.size === 0 ? cur : new Map();
-      if (!stepIds.some((id) => cur.has(id))) return cur;
-      const next = new Map(cur);
-      for (const id of stepIds) next.delete(id);
-      return next;
-    });
+    setEdits((cur) => dropStepEdits(cur, stepIds));
   }
 
   function remapDrafts(stepIdMap: Record<string, string>) {
-    if (Object.keys(stepIdMap).length === 0) return;
-    setEdits((cur) => {
-      const next = new Map<string, Edits>();
-      for (const [stepId, e] of cur) next.set(stepIdMap[stepId] ?? stepId, e);
-      return next;
-    });
+    setEdits((cur) => remapStepEdits(cur, stepIdMap));
   }
 
   async function refreshAfter(revisionNumber: number) {
@@ -314,10 +304,14 @@ export function ProcessStepsSection({
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "DELETE" });
       invalidateHistory(); // #14 item 1
       onError(null);
-      remapDrafts(res.stepIdMap);
-      // The removed step's own draft goes with it — see `dropDrafts`. Ordered after the remap so
-      // the id being dropped is the pre-remap key the overlay is still filed under.
-      dropDrafts([stepId]);
+      // The removed step's own draft goes with it, and everything else rides the cut's mapping —
+      // in ONE call, because the ORDER is the defect (#283). These were two calls, remap then drop,
+      // beneath a comment claiming the drop came second so it would see the pre-remap key: the
+      // exact opposite of what happens. `workingRevision` copies every step of a locked revision,
+      // so the map carried the removed step too, the remap moved its draft onto the copy the same
+      // transaction had deleted, and the drop then deleted a key holding nothing — leaving the page
+      // registered unsaved with nothing on screen able to clear it.
+      setEdits((cur) => stepEditsAfterRemoval(cur, res.stepIdMap, stepId));
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
