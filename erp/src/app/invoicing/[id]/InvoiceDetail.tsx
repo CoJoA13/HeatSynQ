@@ -157,10 +157,16 @@ function InvoiceDocumentsList({ invoiceId, viewGate, refresh }: {
 // at save time anyway, so one instance composed once and filtered twice for display is simpler
 // and cannot let the two "halves" drift out of position order relative to each other.
 //
-// `key`/`parentKey` carry the OPERATION -> PART self-relation across the save (invoices.ts's
-// `wirePayloadParents`): every row keeps its own server id as `key` so a child can still resolve
-// its parent, and a PART line removed without removing its children leaves them flat rather than
-// dangling (the server's own documented fallback — not re-implemented here).
+// `wireKey`/`parentKey` carry the OPERATION -> PART self-relation across the save (invoices.ts's
+// `wirePayloadParents`): every row keeps its own server id as `wireKey` so a child can still
+// resolve its parent, and a PART line removed without removing its children leaves them flat rather
+// than dangling (the server's own documented fallback — not re-implemented here).
+//
+// It is `wireKey`, not `key`, because it is NOT this row's identity — it is an opaque token the
+// server correlates WITHIN one payload and never persists (`lineColumns` drops it). The grid's own
+// identity is `ComposedRow.key`, which `useBulkGrid` supplies. Naming both `key` is what #281 was:
+// the field shadowed the identity, so an added row composed under `key: ""`, matched no `clientId`,
+// and could not be typed into or removed. `useBulkGrid` now refuses the collision at compile time.
 //
 // Editing a row's `amount` is the one edit that also stamps `priceSource: MANUAL` and clears
 // `needsPrice` — a deliberate UI decision (not spec-mandated): the operator just supplied the
@@ -171,7 +177,7 @@ function InvoiceDocumentsList({ invoiceId, viewGate, refresh }: {
 // ---------------------------------------------------------------------------------------------
 
 type LineFields = {
-  key: string; parentKey: string; kind: string;
+  wireKey: string; parentKey: string; kind: string;
   orderLineId: string; processStepCodeId: string; surchargeId: string; orderChargeId: string; glAccountId: string;
   partNumber: string; partName: string; partDescription: string;
   description: string; glAccountName: string;
@@ -195,7 +201,7 @@ function sourceLabel(row: { priceSource: string; sourceQuoteNumber: string }): s
 
 function toLineFields(l: InvoiceLineRow): LineFields {
   return {
-    key: l.id, parentKey: l.parentLineId ?? "", kind: l.kind,
+    wireKey: l.id, parentKey: l.parentLineId ?? "", kind: l.kind,
     orderLineId: l.orderLineId ?? "", processStepCodeId: l.processStepCodeId ?? "",
     surchargeId: l.surchargeId ?? "", orderChargeId: l.orderChargeId ?? "", glAccountId: l.glAccountId ?? "",
     partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
@@ -222,7 +228,7 @@ function toLineFields(l: InvoiceLineRow): LineFields {
  *  amount-edit stamp above: a line the operator typed in themselves is never "needs price". */
 function blankChargeRow(): LineFields {
   return {
-    key: "", parentKey: "", kind: "CHARGE",
+    wireKey: "", parentKey: "", kind: "CHARGE",
     orderLineId: "", processStepCodeId: "", surchargeId: "", orderChargeId: "", glAccountId: "",
     partNumber: "", partName: "", partDescription: "", description: "", glAccountName: "",
     qty: "", weight: "", eachWeight: "",
@@ -266,7 +272,9 @@ function InvoiceLinesGrid({
         if (!Number.isInteger(qty)) { onError(`Line ${i + 1}: quantity must be a whole number.`); return; }
       }
       payload.push({
-        ...(row.key ? { key: row.key } : {}),
+        // The WIRE token, deliberately not `row.key` (this row's grid identity): a locally-added
+        // row has no server id, and omitting the key is what tells `wirePayloadParents` it is new.
+        ...(row.wireKey ? { key: row.wireKey } : {}),
         parentKey: row.parentKey || null,
         kind: row.kind,
         orderLineId: row.orderLineId || null, processStepCodeId: row.processStepCodeId || null,

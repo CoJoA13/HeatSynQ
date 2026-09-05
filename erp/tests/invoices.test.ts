@@ -668,6 +668,33 @@ describe("replaceInvoiceLines", () => {
     await expect(asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map(toLineInput))))
       .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/that gl account does not exist/i) });
   });
+
+  // The one thing the payload's `key`/`parentKey` exist FOR, and nothing asserted it through this
+  // entry point: every `parentLineId` assertion in this file is on createInvoice, recalculate or
+  // createCredit instead. Found while fixing #281, which changed what the grid puts in `key`.
+  //
+  // It has to survive a replace specifically because the replace REMINTS every row id — an
+  // id-based parent link could not possibly survive, so `wirePayloadParents` re-derives the
+  // relation from the caller's own opaque tokens. Mutation-proof: drop the `wirePayloadParents`
+  // call from `replaceInvoiceLines`, or send `parentKey: null`, and the OPERATION line comes back
+  // flat.
+  it("re-wires the OPERATION -> PART self-relation from the caller's key/parentKey", async () => {
+    const { invoice } = await draftFixture();
+    const part = invoice.lines.find((l) => l.kind === "PART");
+    const operation = invoice.lines.find((l) => l.kind === "OPERATION");
+    expect(part, "fixture must carry a PART line").toBeDefined();
+    expect(operation?.parentLineId, "fixture's OPERATION must already hang off the PART")
+      .toBe(part!.id);
+
+    const replaced = await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map(toLineInput)));
+    const newPart = replaced.lines.find((l) => l.kind === "PART")!;
+    const newOperation = replaced.lines.find((l) => l.kind === "OPERATION")!;
+
+    // Ids really were reminted — otherwise the parent link could have survived by accident and
+    // this would prove nothing about the wiring.
+    expect(newPart.id).not.toBe(part!.id);
+    expect(newOperation.parentLineId).toBe(newPart.id);
+  });
 });
 
 describe("recalculateInvoice", () => {

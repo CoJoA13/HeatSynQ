@@ -60,6 +60,51 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 (third pass) — THE GRID OWNS THE ROW'S IDENTITY, AND A FIELDS TYPE CAN NO LONGER TAKE
+IT (#281).** `useBulkGrid` supplies `key`/`isNew` on every composed row and `clientId` on every added
+one, but the composition spread the caller's fields LAST — so a `Fields` type declaring one of those
+names silently overwrote it. Exactly one caller did: the invoice grid's `LineFields` declared `key`,
+and `blankChargeRow` seeded it `""`. Every locally-added charge row therefore composed under
+`key: ""`, which matched no `clientId` — the row could not be typed into (`updateAdded("")` patches
+nothing), could not be removed (`removeAdded("")` filters nothing), rendered as a duplicate React
+key, and held `added.length > 0` forever, which through `useUnsavedPresent()` disabled invoice
+finalize, recalculate and print. **Correcting the issue's own account: it was recoverable.** Save
+succeeds — a blank amount of `0` passes the validator — so the escape was to write a junk $0 MANUAL
+CHARGE line onto real paper, which `recalculateInvoice` then preserves forever as an addition.
+
+**Two guards, because they fail differently.** `NoRowIdentity` makes the collision a COMPILE error,
+and the identity now spreads LAST everywhere a row is built. Neither alone is enough: the type guard
+is invisible to plain JS and to an `as` cast, and the ordering is invisible to a reader who never
+looks. The prohibition rides `toFields`'s RETURN type rather than the type parameter — measured, not
+guessed: on the parameter it collapses `ComposedRow<Fields>` to `never` and buries the one real
+message under 46 "property does not exist on type 'never'", while on the return type it produces
+exactly ONE error, at the call site, naming the offending property. Its members are literal-string
+messages, so the compiler itself states the rule and cites the issue.
+
+**Three names, not two.** `clientId` identifies an added row before it has a server id, and it was
+spread over in three places (`appendRows`, `addRow`, `updateAdded`) — the same dead end by another
+route, and the gap the mutation matrix found after the first pass looked complete. `updateAdded`'s
+patch became the pure `patchAdded` for the same reason `mergeEdit` and `appendRows` are pure: there
+is no component renderer, so an un-extracted guard cannot be proven at all.
+
+**The invoice's wire token got its own name.** `key`/`parentKey` carry the OPERATION→PART relation
+across a save, but that `key` is an opaque token `wirePayloadParents` correlates WITHIN one payload
+and never persists (`lineColumns` drops it) — not this row's identity. Conflating the two names is
+what #281 was, so the field is now `wireKey`. **Zero payload bytes change**: an existing row already
+sent its server line id and still does, and an added row still sends no key at all.
+
+Gates: **3839 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. Six mutations verified
+red (identity-first in either compose branch; the prohibition dropped whole or just its `clientId`
+member; `patchAdded`'s re-stamp; `appendRows`' id first). `invoice-shipped-order` gained the only
+coverage this behaviour has in either gate — add a charge row, type into it, remove it, and confirm
+Finalize frees up — and it deliberately writes NOTHING, since the invoice it probes is the frozen
+paper the rest of that flow asserts on. **That segment was mutation-proven against the whole pre-fix
+source, and the weaker mutation is worth recording: flipping the compose order ALONE leaves the flow
+green**, because renaming the field to `wireKey` already removed the collision, so there is nothing
+left for the order to shadow. Only reverting both halves reds it (assertion-level, correctly not
+retried) — a reminder that a flow proves the defect, not the line you happen to suspect. No manual
+re-capture.
+
 **2026-09-05 (second pass) — A BULK GRID IS DIRTY WHEN IT DIFFERS FROM THE SERVER, NOT WHEN AN
 OVERLAY EXISTS (#279, merged `8007e19`, PR #284, squash).** `useBulkGrid`'s `dirty` was
 `edits.size > 0 || added.length > 0 || removedIds.size > 0` under a docstring promising "anything a
@@ -96,13 +141,10 @@ on an already-1..N list it is now a no-op — and `buildPayload` refuses an out-
 instruction would have greyed out the only control it mentions, so `renumber()` clears the banner it
 answers.
 
-**Found while designing this: #281**, a live defect it deliberately does NOT fix. `InvoiceDetail`'s
-`LineFields` declares its own `key`, `blankChargeRow` sets it `""`, and `compose` spreads the
-caller's fields last — so every added charge row composes with `key === ""`, cannot be typed into or
-removed (`updateAdded("")` matches nothing), and keeps the grid dirty forever, permanently disabling
-finalize/recalculate/print. The spread order is pinned unchanged by a test that says so and says to
-delete itself when #281 lands, because behaviour cannot see spread order when a fixture's fields
-carry no `key`.
+**Found while designing this: #281**, a live defect it deliberately did NOT fix — added invoice
+charge rows composed with `key === ""` and could be neither typed into nor removed. It was pinned
+unchanged by a test that said to delete itself when #281 landed, which it now has: see the entry
+above.
 
 Gates: **3829 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. No manual re-capture.
 

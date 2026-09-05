@@ -139,6 +139,53 @@ export async function run(page, shot, ctx) {
   assert.equal(await page.locator("td", { hasText: "needs price" }).count(), 0,
     "both priced operations must resolve a price — nothing should need one");
 
+  // --- #281: a locally-ADDED charge row must be editable and removable. ---
+  //
+  // The only coverage of this in either gate. `useBulkGrid` owns `key` on every composed row, and
+  // the invoice grid's own `LineFields` used to declare a `key` of its own that shadowed it — so an
+  // added row composed under `key: ""`, which matched no `clientId`. The row could not be typed
+  // into (`updateAdded("")` patches nothing) and could not be removed (`removeAdded("")` filters
+  // nothing), which held the grid dirty forever and disabled Finalize below for the rest of the
+  // page's life. Both halves are silent: the fill LOOKS like it worked until the value is read back.
+  //
+  // Deliberately writes NOTHING — the row is added, typed into, then removed, and Save is never
+  // clicked. This invoice is finalized a few lines down and its lines are the frozen paper the
+  // assertions above and below are about; a probe that saved a charge line onto it would be
+  // changing the document it is meant to be checking.
+  //
+  // Row-scoped rather than label-scoped on purpose: `partOpRow` and `otherRow` both label their
+  // inputs `Line <n> …`, each numbered within its OWN table, so "Line 1 description" can genuinely
+  // match twice on this page and a label locator would trip strict mode.
+  const linesSection = page.locator("section")
+    .filter({ has: page.getByRole("heading", { name: "Lines", exact: true }) });
+  const chargeTable = linesSection.locator("table").last();
+  const rowsBefore = await chargeTable.locator("tbody tr").count();
+
+  await page.getByRole("button", { name: "Add charge line", exact: true }).click();
+  // `.nth(rowsBefore)` rather than `.last()`: added rows append, so this names the new row
+  // positionally and still resolves to nothing once it is removed — where `.last()` would slide
+  // onto a surviving row and make the absence check below pass with the row still on screen.
+  const addedRow = chargeTable.locator("tbody tr").nth(rowsBefore);
+  const addedDescription = addedRow.getByRole("textbox").first();
+  await addedDescription.fill("E2E row-identity probe");
+  // The load-bearing read: under the defect the fill is a no-op and this never settles.
+  await waitForValue(addedDescription, "E2E row-identity probe");
+
+  await addedRow.getByRole("button", { name: "Remove", exact: true }).click();
+  await assertNeverVisible(addedRow,
+    "an added charge row must disappear when Remove is clicked (#281: removeAdded matched no clientId)");
+  assert.equal(await chargeTable.locator("tbody tr").count(), rowsBefore,
+    "removing the added charge row must restore the original row count");
+
+  // The user-visible consequence, and the reason this mattered beyond the grid: an un-removable row
+  // keeps the section registered unsaved, and the finalize gate refuses over a dirty editor.
+  await page.getByRole("button", { name: "Finalize", exact: true })
+    .waitFor({ state: "visible", timeout: 10000 });
+  assert.equal(
+    await page.getByRole("button", { name: "Finalize", exact: true }).isDisabled(), false,
+    "Finalize must be enabled again once the added row is removed — a stuck row disables it",
+  );
+
   // --- Finalize: controls lock, the order becomes Invoiced. ---
   await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await page.getByText("Finalized", { exact: true }).waitFor({ state: "visible", timeout: 15000 });

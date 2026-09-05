@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendRows, computeOrphanChurn, mergeEdit } from "@/lib/bulk-grid";
+import { appendRows, composeRows, computeOrphanChurn, mergeEdit, patchAdded } from "@/lib/bulk-grid";
 
 // Pure module (no DOM/React state involved), unlike the rest of bulk-grid.ts's hook — extracted
 // specifically so the id-churn matrix is unit-testable without a component-test harness (this
@@ -225,6 +225,133 @@ describe("serial-range expansion call sites", () => {
   });
 });
 
+// #281: `useBulkGrid` owns `key` and `isNew` on every composed row, but the composition used to
+// spread the caller's fields LAST, so a `Fields` type declaring either one silently overwrote the
+// identity. Exactly one caller did — the invoice grid's `LineFields` declared `key`, and
+// `blankChargeRow` seeded it "" — so every locally-added charge row composed under `key: ""`. That
+// matched no `clientId`, leaving a row that could not be typed into (`updateAdded("")` matches
+// nothing), could not be removed (`removeAdded("")` filters nothing), rendered as a duplicate React
+// key, and held `added.length > 0` forever — which through `useUnsavedPresent()` disabled invoice
+// finalize, recalculate and print.
+//
+// The fix is two guards for one defect, covering different failure modes: `NoRowIdentity` stops the
+// collision COMPILING (pinned in tests/bulk-grid.type-pin.ts, enforced by `npx tsc --noEmit`), and
+// the identity now spreads LAST so it is un-shadowable at runtime whatever reaches the composition
+// — plain JS, an `as` cast, or a future Fields widened through an index signature. The fixtures
+// below cast a colliding shape in on purpose, which is the only way to exercise the runtime half
+// now that typed code cannot express it.
+// The added row's identity is `clientId`, and it is spread over in three places — `appendRows`,
+// `addRow` and `updateAdded`. Same defect shape as #281's `key`: a row whose clientId is not its own
+// can never be patched or removed, which is the same dead end by a different route.
+describe("added-row identity (clientId)", () => {
+  type Colliding = { clientId: string; note: string };
+
+  it("appendRows: the generated id wins over a field of the same name", () => {
+    // Mutation-proof: restore `{ clientId: crypto.randomUUID(), ...row }` and the row keeps the
+    // caller's "STOLEN", which matches nothing in updateAdded/removeAdded.
+    const [row] = appendRows<Colliding>([], [{ clientId: "STOLEN", note: "n" }]);
+    expect(row.clientId).not.toBe("STOLEN");
+    expect(row.clientId.length).toBeGreaterThan(0);
+    expect(row.note).toBe("n");
+  });
+
+  it("patchAdded: a patch cannot steal the row's clientId", () => {
+    // Mutation-proof: drop the trailing `clientId` re-stamp and this reds.
+    const cur = [{ clientId: "c1", note: "a" }, { clientId: "c2", note: "b" }];
+    const next = patchAdded(cur, "c1", { note: "typed", clientId: "STOLEN" } as Partial<Colliding>);
+    expect(next[0]).toEqual({ clientId: "c1", note: "typed" });
+    expect(next[1]).toBe(cur[1]);
+  });
+
+  it("patchAdded: a clientId matching nothing changes nothing", () => {
+    const cur = [{ clientId: "c1", note: "a" }];
+    expect(patchAdded(cur, "gone", { note: "x" })).toEqual(cur);
+  });
+});
+
+describe("composeRows", () => {
+  type Note = { note: string };
+  // Only `key` is declared here. A fixture that also declared `isNew: string` would collapse
+  // `ComposedRow<F>` to `never` (string vs boolean), so the `isNew` half is exercised through a
+  // cast below instead — the collision it models is exactly what the type guard now forbids.
+  type CollidingKey = { key: string; description: string };
+  const empty = { edits: new Map(), added: [], removedIds: new Set<string>() };
+
+  it("composes server rows through toFields, overlaid with their edits", () => {
+    const rows = composeRows<{ id: string }, Note>({
+      ...empty,
+      serverRows: [{ id: "a" }, { id: "b" }],
+      toFields: (r) => ({ note: r.id }),
+      edits: new Map([["b", { note: "typed" }]]),
+    });
+    expect(rows.map((r) => [r.key, r.isNew, r.note])).toEqual([["a", false, "a"], ["b", false, "typed"]]);
+  });
+
+  it("skips removed rows and appends added ones after, in order", () => {
+    const rows = composeRows<{ id: string }, Note>({
+      ...empty,
+      serverRows: [{ id: "a" }, { id: "b" }],
+      toFields: (r) => ({ note: r.id }),
+      removedIds: new Set(["a"]),
+      added: [{ clientId: "c1", note: "x" }, { clientId: "c2", note: "y" }],
+    });
+    expect(rows.map((r) => r.key)).toEqual(["b", "c1", "c2"]);
+    expect(rows.map((r) => r.isNew)).toEqual([false, true, true]);
+  });
+
+  it("THE DEFECT: an added row keeps its clientId even when the fields carry a key of their own", () => {
+    // #281 in one line. Mutation-proof: restore `{ key: a.clientId, isNew: true, ...a }` and the
+    // composed key becomes "" — the value that matched no clientId and stranded the invoice grid.
+    // A fixture WITHOUT a `key` member cannot see this: it composes identically under either
+    // order, which is exactly why the defect survived every behavioural assertion until now.
+    const rows = composeRows<{ id: string }, CollidingKey>({
+      ...empty,
+      serverRows: [],
+      toFields: () => ({ key: "", description: "" }),
+      added: [{ clientId: "c1", key: "", description: "typed" }],
+    });
+    expect(rows[0].key).toBe("c1");
+    expect(rows[0].isNew).toBe(true);
+    expect(rows[0].description).toBe("typed");
+  });
+
+  it("an EXISTING row keeps its server id too — the same shadow, the other branch", () => {
+    // Harmless today only by coincidence (the invoice grid's own `key` happened to equal the row
+    // id). Nothing pinned that, so it is pinned here: restore identity-first and this reds.
+    const rows = composeRows<{ id: string }, CollidingKey>({
+      ...empty,
+      serverRows: [{ id: "srv" }],
+      toFields: () => ({ key: "WRONG", description: "d" }),
+    });
+    expect(rows[0].key).toBe("srv");
+    expect(rows[0].isNew).toBe(false);
+  });
+
+  it("an EDIT cannot steal the identity either — the overlay spreads before it", () => {
+    const rows = composeRows<{ id: string }, CollidingKey>({
+      ...empty,
+      serverRows: [{ id: "srv" }],
+      toFields: () => ({ key: "", description: "d" }),
+      edits: new Map([["srv", { key: "WRONG", description: "typed" }]]),
+    });
+    expect(rows[0].key).toBe("srv");
+    expect(rows[0].description).toBe("typed");
+  });
+
+  it("`isNew` is un-shadowable too, though only a cast can express the collision", () => {
+    // The type guard forbids a Fields declaring `isNew`, and `ComposedRow` cannot even represent
+    // one (string vs boolean reduces the intersection to `never`) — so this reaches the runtime
+    // through a cast, which is precisely the escape hatch the ordering exists to cover.
+    const rows = composeRows<{ id: string }, Note>({
+      ...empty,
+      serverRows: [{ id: "srv" }],
+      toFields: () => ({ note: "n", isNew: "WRONG" } as unknown as Note),
+      added: [{ clientId: "c1", note: "n", isNew: "WRONG" } as unknown as { clientId: string } & Note],
+    });
+    expect(rows.map((r) => r.isNew)).toEqual([false, true]);
+  });
+});
+
 // The #279 invariants that BEHAVIOUR cannot express, checked at the source — the `serial-range
 // expansion call sites` precedent directly below, and the partial-unique-sweep reasoning it cites.
 describe("useBulkGrid baseline call sites", () => {
@@ -254,14 +381,14 @@ describe("useBulkGrid baseline call sites", () => {
     }
   });
 
-  it("added rows still spread the caller's fields LAST — #281 preserved, not silently changed", () => {
-    // A caller whose `Fields` declares its own `key` shadows the composed one; the invoice grid
-    // does, with `key: ""`, and #281 is that defect. Fixing it inside #279 would be an unrelated
-    // behaviour change in a PR that promises not to make one — and it is invisible to any
-    // assertion on composed rows, because a fixture whose Fields has no `key` member behaves
-    // identically under either order. DELETE THIS TEST when #281 is fixed; it pins a bug on
-    // purpose, and only so that it cannot move by accident.
-    const src = readFileSync(join(SRC, "lib/bulk-grid.ts"), "utf8");
-    expect(src).toMatch(/key: a\.clientId, isNew: true, \.\.\.a/);
+  it("no consumer re-derives rows itself — composeRows is for tests, not a re-supply hatch", () => {
+    // `composeRows` was extracted so the composition could be mutation-proven at all (the hook
+    // cannot run under vitest). Exporting it also hands a consumer every input it would need to
+    // compose against its OWN baseline, which is the two-baselines drift #279 removed — and the
+    // sibling sweep above only looks for `.compose(`, so it would not see this shape.
+    for (const [file, src] of consumers) {
+      expect(src, `${file}: must not compose rows itself — read grid.rows`)
+        .not.toMatch(/\bcomposeRows\s*\(/);
+    }
   });
 });
