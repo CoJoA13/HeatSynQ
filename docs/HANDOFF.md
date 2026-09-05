@@ -60,6 +60,39 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 (fifth pass) — THE STEP OVERLAY IS ALWAYS KEYED LIKE THE ROWS ON SCREEN (#288).**
+A cut's old-to-new mapping arrives a full round trip before the reload that renumbers the rows:
+`refreshAfter` only sets `selected`, and the detail is fetched by an effect, so on the cut path it
+returns before anything re-renders. Every mutator applied that mapping to the overlay on arrival,
+which left the two halves of the editor disagreeing about what each step is called for the whole
+window. Three consequences, all verified: every unsaved draft went INVISIBLE (a row's lookup is by
+its rendered id and missed), a keystroke landed under a pre-cut id nothing would ever reach again —
+stranding the section exactly as #283 did, and silently losing the character too — and the section
+reported unsaved changes on a page the operator had not touched, because a remapped key is absent
+from `originals` until the reload lands. Filed while fixing #283; the last two symptoms were found
+only when this was investigated properly, so the issue understated it.
+
+**The mapping is STAGED and applied at the landing.** `stagePendingRekey` records it against the
+revision it produced; `applyPendingRekey` applies it in the same `setEdits`/`setDetail` commit
+inside `loadDetail`. That pairing IS the fix — the overlay's key space and the rows' change
+together or not at all. Staging keys on the revision because a detail load can be for a revision the
+picker moved to rather than the one the mutation produced, and a staged mapping WAITS rather than
+being discarded, so a detour to an older revision and back still lands it. Two cuts compose, since a
+mapping already waiting points at the previous cut's ids.
+
+**The DROP stays eager, and that asymmetry is load-bearing.** At the moment of a removal the overlay
+is still in the rendered rows' key space, so the removed step's id names exactly the entry to
+remove; deferring it would leave a draft alive on a row the server has already destroyed — the
+guard-nobody-can-clear shape of #283, reopened. It also means removal no longer re-keys anything at
+the call site, so #283's ordering hazard is now absent rather than merely correct, and
+`stepEditsAfterRemoval` (shipped one PR earlier) is retired as dead code. #283's server-side prune
+is untouched and still the thing that closes that class.
+
+Gates: **3856 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. Seven mutations verified
+red, including the two that matter most: applying the stage early, and deferring the drop. The
+`revision-cut` flow is the live proof the PR #22 draft-carry still works — the mapping is still
+applied, just later. No manual re-capture.
+
 **2026-09-05 (fourth pass) — A REMOVED STEP'S DRAFT NO LONGER SURVIVES ITS OWN DELETION (#283,
 merged `3cb7a5a`, PR #289, squash).** Removing a process step from a LOCKED revision cuts N+1, and
 `workingRevision` copies EVERY step — it cannot know why it was called — so the mapping it returns

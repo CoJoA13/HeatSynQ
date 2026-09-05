@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  buildStepOriginals, dropStepEdits, editsAfterSave, isStepDirty, pendingChanges, remapStepEdits,
-  shownInstruction, shownValue, stepEditsAfterRemoval, type StepEdits,
+  applyPendingRekey, buildStepOriginals, dropStepEdits, editsAfterSave, isStepDirty, pendingChanges,
+  remapStepEdits, shownInstruction, shownValue, stagePendingRekey, type StepEdits,
 } from "@/lib/step-drafts";
 
 // The draft model behind ProcessStepsSection, extracted so it can be tested at all: the vitest
@@ -189,34 +189,72 @@ describe("remapStepEdits", () => {
   });
 });
 
-describe("stepEditsAfterRemoval", () => {
+// #288: the mutation response carries the cut's mapping a full round trip before the reload
+// renumbers the rows, because `refreshAfter` only sets `selected` and the detail is fetched by an
+// effect. Re-keying on arrival left the overlay and the rendered rows disagreeing about every
+// step's name for that whole window — drafts vanished from their inputs, a keystroke landed under a
+// pre-cut id nothing could reach again, and the section read dirty on a page nobody had touched.
+// The mapping is staged instead, and applied in the same commit that installs the new rows.
+describe("stagePendingRekey", () => {
+  it("stages nothing when no cut happened", () => {
+    // The everyday amend-in-place path. Mutation-proof: drop the empty-map guard and a no-cut
+    // mutation stages a mapping that would later re-key the overlay to nothing.
+    expect(stagePendingRekey(null, 3, {})).toBeNull();
+    const held = { toRevision: 2, map: { a: "a2" } };
+    expect(stagePendingRekey(held, 2, {})).toBe(held);
+  });
+
+  it("records the mapping against the revision it produced", () => {
+    expect(stagePendingRekey(null, 2, { a: "a2" })).toEqual({ toRevision: 2, map: { a: "a2" } });
+  });
+
+  it("COMPOSES across two cuts, so a draft two cuts behind still resolves", () => {
+    // Mutation-proof: replace the composition with a plain merge and `a` still points at `a2`,
+    // a revision that no longer exists — the draft would be re-keyed onto nothing.
+    const first = stagePendingRekey(null, 2, { a: "a2" });
+    const second = stagePendingRekey(first, 3, { a2: "a3" });
+    expect(second).toEqual({ toRevision: 3, map: { a: "a3", a2: "a3" } });
+  });
+});
+
+describe("applyPendingRekey", () => {
   const edits = (ids: string[]) => new Map(ids.map((id) => [id, { values: new Map() } as StepEdits]));
 
-  it("THE DEFECT: the removed step's draft goes, even though the cut mapping names it", () => {
-    // The #283 fixture exactly: a cut happened, and the mapping still carries the removed step.
-    // Mutation-proof: swap the composition to `dropStepEdits(remapStepEdits(...), [removed])` and
-    // "x2" survives — a draft keyed on a step that no longer exists on any revision, which is what
-    // held the page unsaved forever.
-    const next = stepEditsAfterRemoval(edits(["x", "y"]), { x: "x2", y: "y2" }, "x");
-    expect([...next.keys()]).toEqual(["y2"]);
+  it("THE DEFECT: nothing is re-keyed until the rows it belongs to land", () => {
+    // The window itself. Mutation-proof: make the mutators re-key on arrival again (or drop the
+    // revision check here) and the overlay moves to `a2` while the rows still render `a` — every
+    // draft invisible, and any keystroke stranded under `a`.
+    const cur = edits(["a"]);
+    const pending = { toRevision: 2, map: { a: "a2" } };
+    const early = applyPendingRekey(cur, pending, 1);
+    expect([...early.edits.keys()], "a rev-1 landing must not consume a rev-2 mapping").toEqual(["a"]);
+    expect(early.pending, "and must leave it staged for when rev 2 does land").toBe(pending);
   });
 
-  it("carries every OTHER step's draft across the cut", () => {
-    const next = stepEditsAfterRemoval(edits(["x", "y", "z"]), { x: "x2", y: "y2", z: "z2" }, "x");
-    expect([...next.keys()].sort()).toEqual(["y2", "z2"]);
+  it("applies exactly once, at its own revision, and clears the stage", () => {
+    // Clearing matters: a stage left set would re-key a second time on the next load, moving every
+    // draft onto ids that mean nothing. Mutation-proof: return the pending unchanged and this reds.
+    const applied = applyPendingRekey(edits(["a", "b"]), { toRevision: 2, map: { a: "a2" } }, 2);
+    expect([...applied.edits.keys()].sort()).toEqual(["a2", "b"]);
+    expect(applied.pending).toBeNull();
   });
 
-  it("still drops the removed step when no cut happened (empty mapping)", () => {
-    // The everyday, unlocked-revision path. Nothing here exercises the remap, so a fix that only
-    // reordered the two would still have to keep this green.
-    expect([...stepEditsAfterRemoval(edits(["x", "y"]), {}, "x").keys()]).toEqual(["y"]);
+  it("a detour to an older revision and back still lands the mapping", () => {
+    // The staged mapping WAITS rather than being discarded — the picker can move away and come
+    // back, and the drafts must survive the round trip.
+    const cur = edits(["a"]);
+    const pending = { toRevision: 3, map: { a: "a3" } };
+    const detour = applyPendingRekey(cur, pending, 1);
+    const back = applyPendingRekey(detour.edits, detour.pending, 3);
+    expect([...back.edits.keys()]).toEqual(["a3"]);
+    expect(back.pending).toBeNull();
   });
 
-  it("drops the removed step even if the server still names it in the mapping", () => {
-    // Belt: `removeStep` now prunes the entry pointing at the row it deleted, but the client must
-    // not DEPEND on that — the drop happens first, so there is nothing left for the remap to move.
-    const next = stepEditsAfterRemoval(edits(["x"]), { x: "dead-copy" }, "x");
-    expect(next.size).toBe(0);
+  it("is a no-op when nothing is staged", () => {
+    const cur = edits(["a"]);
+    const res = applyPendingRekey(cur, null, 2);
+    expect(res.edits).toBe(cur);
+    expect(res.pending).toBeNull();
   });
 });
 
@@ -231,19 +269,31 @@ describe("ProcessStepsSection step-draft call sites", () => {
     return m![0];
   };
 
-  it("removeStepAction drops and remaps in ONE call, never as two it could mis-order", () => {
+  it("removeStepAction drops EAGERLY and only stages the re-key (#283 + #288)", () => {
+    // Eager is load-bearing: the overlay is still in the rendered rows' key space at that moment,
+    // so `stepId` names exactly the entry to remove. Deferring the drop would leave a draft alive
+    // on a row the server has already destroyed — the guard-nobody-can-clear shape of #283.
     const body = fn("removeStepAction");
-    expect(body).toMatch(/stepEditsAfterRemoval\(cur, res\.stepIdMap, stepId\)/);
-    // The pair that produced #283 must not come back alongside it.
-    expect(body).not.toMatch(/\bremapDrafts\(/);
-    expect(body).not.toMatch(/\bdropDrafts\(/);
+    expect(body).toMatch(/dropDrafts\(\[stepId\]\)/);
+    expect(body).toMatch(/stageRekey\(res\)/);
   });
 
-  it("the mutators that only re-key still remap — the PR #22 carry is not dropped by this change", () => {
+  it("every mutator STAGES its mapping — none re-keys the overlay on arrival (#288)", () => {
     // Named individually rather than counted: a count passes when one is deleted and another added.
-    for (const name of ["saveStep", "addStepAction", "move"]) {
-      expect(fn(name), `${name} must still carry drafts across a cut`).toMatch(/remapDrafts\(res\.stepIdMap\)/);
+    // The PR #22 carry is preserved — the mapping is still applied, just at the landing.
+    for (const name of ["saveStep", "addStepAction", "removeStepAction", "move"]) {
+      expect(fn(name), `${name} must stage its mapping`).toMatch(/stageRekey\(res\)/);
+      expect(fn(name), `${name} must not re-key the overlay on arrival`).not.toMatch(/remapStepEdits\(/);
     }
+  });
+
+  it("loadDetail applies the staged mapping in the same commit that installs the rows", () => {
+    // The pairing IS the fix. Mutation-proof: move the apply out of loadDetail and the overlay and
+    // the rows change key space at different moments again, which is #288.
+    const load = /const loadDetail = useCallback\([\s\S]*?\n  \}, \[/.exec(src);
+    expect(load, "loadDetail not found — update this sweep alongside the rename").not.toBeNull();
+    expect(load![0]).toMatch(/applyPendingRekey\(cur, pendingRekey\.current, data\.revisionNumber\)/);
+    expect(load![0]).toMatch(/setDetail\(data\)/);
   });
 
   it("loadTemplateAction still drops every draft — the recipe it replaces orphans them all", () => {

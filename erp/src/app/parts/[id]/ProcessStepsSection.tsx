@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { invalidateHistory } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
@@ -7,7 +7,7 @@ import { swapAt } from "@/lib/reorder";
 import {
   buildStepOriginals, editsAfterSave, isStepDirty, pendingChanges, shownInstruction, shownValue,
   type StepEdits,
-  dropStepEdits, remapStepEdits, stepEditsAfterRemoval,
+  applyPendingRekey, dropStepEdits, stagePendingRekey, type PendingRekey,
 } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 import { useUnsavedSection } from "@/lib/use-unsaved-section";
@@ -76,6 +76,21 @@ export function ProcessStepsSection({
   const revisionsLatest = useLatest();
   const detailLatest = useLatest();
 
+  /**
+   * A cut's re-keying, held until the reloaded rows arrive (#288). The mutators used to apply it
+   * on arrival, a full round trip before `refreshAfter`'s reload renumbers the rows — so the
+   * overlay and the rendered rows disagreed about every step's name for that whole window: drafts
+   * vanished from their inputs, a keystroke landed under a pre-cut id nothing could reach again,
+   * and the section reported unsaved changes the operator had not made.
+   *
+   * A ref, not state: it is written in async handlers and read in `loadDetail`'s success path, and
+   * never during render — so it drives nothing on screen and needs no re-render of its own.
+   */
+  const pendingRekey = useRef<PendingRekey>(null);
+  const stageRekey = (res: { revisionNumber: number; stepIdMap: Record<string, string> }) => {
+    pendingRekey.current = stagePendingRekey(pendingRekey.current, res.revisionNumber, res.stepIdMap);
+  };
+
   const loadRevisions = useCallback(async (): Promise<RevisionSummary[]> => {
     const t = revisionsLatest.next();
     try {
@@ -101,7 +116,16 @@ export function ProcessStepsSection({
     const t = detailLatest.next();
     try {
       const data = await api<RevisionDetail>(`/api/parts/${partId}/process/revisions/${revisionNumber}`);
-      if (detailLatest.isCurrent(t)) setDetail(data);
+      if (detailLatest.isCurrent(t)) {
+        // The overlay's key space and the rendered rows' change together, in one commit — that
+        // pairing IS the #288 fix, and splitting it again reopens the window.
+        setEdits((cur) => {
+          const applied = applyPendingRekey(cur, pendingRekey.current, data.revisionNumber);
+          pendingRekey.current = applied.pending;
+          return applied.edits;
+        });
+        setDetail(data);
+      }
     } catch (e) {
       // Drop whatever is on screen rather than leaving it there indefinitely under a revision
       // number it does not belong to — the same reason the `[selected]` effect below clears
@@ -181,10 +205,6 @@ export function ProcessStepsSection({
    */
   function dropDrafts(stepIds: string[] | "all") {
     setEdits((cur) => dropStepEdits(cur, stepIds));
-  }
-
-  function remapDrafts(stepIdMap: Record<string, string>) {
-    setEdits((cur) => remapStepEdits(cur, stepIdMap));
   }
 
   async function refreshAfter(revisionNumber: number) {
@@ -274,8 +294,10 @@ export function ProcessStepsSection({
       onError(null);
       // What was submitted is server truth now; anything typed since is not. Through the cut
       // mapping, since a save against a locked revision cuts N+1 and renumbers the step.
-      remapDrafts(res.stepIdMap);
-      clearSubmittedEdits(res.stepIdMap[stepId] ?? stepId, { instruction, values });
+      // Plain `stepId`: the overlay is NOT re-keyed yet (#288), so it is still filed under the
+      // id this row was rendered with. Resolving through the map here would miss.
+      stageRekey(res);
+      clearSubmittedEdits(stepId, { instruction, values });
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
@@ -293,7 +315,7 @@ export function ProcessStepsSection({
       invalidateHistory(); // #14 item 1
       setAddCodeId("");
       onError(null);
-      remapDrafts(res.stepIdMap);
+      stageRekey(res);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); } finally { setAddingStep(false); }
   }
@@ -304,14 +326,13 @@ export function ProcessStepsSection({
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "DELETE" });
       invalidateHistory(); // #14 item 1
       onError(null);
-      // The removed step's own draft goes with it, and everything else rides the cut's mapping —
-      // in ONE call, because the ORDER is the defect (#283). These were two calls, remap then drop,
-      // beneath a comment claiming the drop came second so it would see the pre-remap key: the
-      // exact opposite of what happens. `workingRevision` copies every step of a locked revision,
-      // so the map carried the removed step too, the remap moved its draft onto the copy the same
-      // transaction had deleted, and the drop then deleted a key holding nothing — leaving the page
-      // registered unsaved with nothing on screen able to clear it.
-      setEdits((cur) => stepEditsAfterRemoval(cur, res.stepIdMap, stepId));
+      // The DROP stays eager while the re-key is staged (#283, then #288). Eager is correct and
+      // load-bearing: the overlay is still in the rendered rows' key space here, so `stepId` names
+      // exactly the entry to remove — and deferring it would leave a draft alive on a row the
+      // server has already destroyed, which is the guard-nobody-can-clear shape #283 was. There is
+      // no ordering hazard left to get wrong, because the removal no longer re-keys anything.
+      dropDrafts([stepId]);
+      stageRekey(res);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
@@ -329,7 +350,7 @@ export function ProcessStepsSection({
         { method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }) });
       invalidateHistory(); // #14 item 1
       onError(null);
-      remapDrafts(res.stepIdMap);
+      stageRekey(res);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }

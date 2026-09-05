@@ -169,20 +169,52 @@ export function remapStepEdits<E>(cur: StepEditMap<E>, stepIdMap: Record<string,
 }
 
 /**
- * The overlay after a step REMOVAL: the removed step's own draft goes, and everything else is
- * carried through the cut's mapping.
+ * A cut's re-keying, held until the rows it belongs to are actually on screen.
  *
- * ONE function because the order is the whole defect (#283). Dropping must happen FIRST, against
- * the pre-remap key the overlay is still filed under; remapping first moves the draft to its
- * post-cut id and the drop then deletes a key holding nothing, stranding the page. The call site
- * had them the other way round beneath a comment asserting this exact rationale in reverse.
+ * THE INVARIANT (#288): the overlay must always be keyed in the key space the RENDERED rows use.
+ * A mutation's response carries the new mapping a full round trip before the reload that renumbers
+ * the rows — `refreshAfter` only sets `selected`, and the detail is fetched by an effect — so
+ * re-keying on arrival left the two halves of the editor disagreeing about what a step is called
+ * for the whole window. Every draft went invisible (a row's lookup missed), a keystroke landed
+ * under a pre-cut id nothing would ever reach again, and the section read dirty on a page the user
+ * had not touched. So the mapping is STAGED here and applied at the landing instead.
  *
- * Correct even when the server hands back a mapping for the removed step — which it no longer does
- * (`removeStep` prunes any entry pointing at the row it deleted) — because by then there is
- * nothing left under that key to move.
+ * `toRevision` is what makes the landing unambiguous: a detail load can be for a revision the
+ * picker moved to rather than the one the mutation produced, and applying a cut's mapping to the
+ * wrong revision's rows would recreate the very mismatch this exists to prevent. A staged mapping
+ * therefore waits — it is not discarded — until its own revision lands, which is what makes a
+ * detour through an older revision and back harmless.
  */
-export function stepEditsAfterRemoval<E>(
-  cur: StepEditMap<E>, stepIdMap: Record<string, string>, removedStepId: string,
-): StepEditMap<E> {
-  return remapStepEdits(dropStepEdits(cur, [removedStepId]), stepIdMap);
+export type PendingRekey = { toRevision: number; map: Record<string, string> } | null;
+
+/**
+ * Record a mutation's mapping against the revision it produced, composing with anything already
+ * waiting. An EMPTY mapping means no cut happened and stages nothing.
+ *
+ * Composition matters because the ids move twice: a mapping already staged points at the previous
+ * cut's ids, so each of its values is forwarded through the new mapping before the new entries are
+ * merged in. Without that, a draft two cuts behind resolves to a revision that no longer exists.
+ */
+export function stagePendingRekey(
+  pending: PendingRekey, toRevision: number, map: Record<string, string>,
+): PendingRekey {
+  if (Object.keys(map).length === 0) return pending;
+  if (pending === null) return { toRevision, map };
+  const composed: Record<string, string> = {};
+  for (const [from, to] of Object.entries(pending.map)) composed[from] = map[to] ?? to;
+  return { toRevision, map: { ...composed, ...map } };
+}
+
+/**
+ * Apply a staged mapping at the moment the rows it belongs to land — and only then.
+ *
+ * Returns both halves so the caller commits the overlay and clears the stage together; leaving the
+ * stage set after applying would re-key a second time on the next load, moving every draft onto ids
+ * that mean nothing.
+ */
+export function applyPendingRekey<E>(
+  edits: StepEditMap<E>, pending: PendingRekey, landedRevision: number,
+): { edits: StepEditMap<E>; pending: PendingRekey } {
+  if (pending === null || pending.toRevision !== landedRevision) return { edits, pending };
+  return { edits: remapStepEdits(edits, pending.map), pending: null };
 }
