@@ -5,6 +5,7 @@
 import { useEffect, useId, useSyncExternalStore } from "react";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, confirmMessage, subscribeUnsaved, unsavedCount,
+  unsavedPresentExcluding,
 } from "./unsaved-guard";
 
 /**
@@ -63,6 +64,12 @@ export function confirmDiscard(): boolean {
  * app, but a property of the router, not of this hook. Use it for gating a control on the page whose
  * editors are registered, never as a global "is the app busy".
  */
-export function useUnsavedPresent(): boolean {
-  return useSyncExternalStore(subscribeUnsaved, () => unsavedCount() > 0, () => false);
+export function useUnsavedPresent(ignoreLabels?: readonly string[]): boolean {
+  return useSyncExternalStore(
+    subscribeUnsaved,
+    // A boolean, so `useSyncExternalStore`'s snapshot identity is stable even though this closure
+    // is not. Pass a module-level constant for `ignoreLabels`, never an inline array.
+    () => (ignoreLabels === undefined ? unsavedCount() > 0 : unsavedPresentExcluding(ignoreLabels)),
+    () => false,
+  );
 }

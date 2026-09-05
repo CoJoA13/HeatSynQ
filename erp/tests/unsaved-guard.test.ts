@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, subscribeUnsaved,
-  shouldGuardNavigation, confirmMessage, unsavedCount, leavesCurrentPage, type NavIntent,
+  shouldGuardNavigation, confirmMessage, unsavedCount, leavesCurrentPage,
+  unsavedPresentExcluding, type NavIntent,
 } from "@/lib/unsaved-guard";
 
 // The pure half of the unsaved-edit guard. The registry is module-level state (the
@@ -161,6 +162,41 @@ describe("unsavedCount", () => {
     clearUnsaved(KEY);
     clearUnsaved("other");
     expect(unsavedCount()).toBe(0);
+  });
+});
+
+describe("unsavedPresentExcluding", () => {
+  // The traveler print gate's read. `readTravelerData` builds the sheet from order lines,
+  // containers and loads and never touches serials or charges, so a dirty Charges grid was
+  // disabling a print it cannot affect (Codex P2 on #272).
+  const IGNORED = ["Serials", "Charges"] as const;
+  // Its own cleanup: the file-level `beforeEach` clears a hand-listed pair of keys, so these two
+  // leaked into the next case and reported a dirty registry as clean-but-for-the-ignored. Scoped
+  // here rather than by extending that list, which would just move the trap one test further on.
+  beforeEach(() => { clearUnsaved("k1"); clearUnsaved("k2"); });
+
+  it("ignores a section that cannot reach the document", () => {
+    markUnsaved("k1", "Charges");
+    expect(unsavedPresentExcluding(IGNORED)).toBe(false);
+  });
+
+  it("still reports a section that CAN", () => {
+    markUnsaved("k1", "Charges");
+    markUnsaved("k2", "Containers");
+    expect(unsavedPresentExcluding(IGNORED)).toBe(true);
+  });
+
+  it("reports an UNRECOGNISED section — the list denies, it does not permit", () => {
+    // The direction that matters. An allow list would fail OPEN the day a section is renamed or a
+    // new grid is added: the gate would quietly stop covering it and paper would be filed over
+    // unsaved work. Denying means the unknown blocks, and the cost of being wrong is a spurious
+    // refusal somebody notices.
+    markUnsaved("k1", "Some Grid Nobody Told The Gate About");
+    expect(unsavedPresentExcluding(IGNORED)).toBe(true);
+  });
+
+  it("is false when nothing is dirty at all", () => {
+    expect(unsavedPresentExcluding(IGNORED)).toBe(false);
   });
 });
 
