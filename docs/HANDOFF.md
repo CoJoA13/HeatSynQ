@@ -60,6 +60,44 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 — A STARTED QUANTITY BREAK NO LONGER STRANDS THE QUOTE PAGE AS UNSAVED (#278).**
+The unsaved-edit guard below registers a typed-but-unadded price break, because it is real work
+`dirty` cannot see. Nothing pruned the record it lives in, so a draft whose price row was then
+removed kept the page registered unsaved for the life of the mount, with **no control able to clear
+it** — the Add-break inputs that could have blanked it were unmounted with the row, and the page's
+own "Unsaved changes" badge and Discard button both gate on `dirty`, which excludes break drafts.
+The page therefore read *clean* while every navigation prompted. Found by Codex on #272 after it
+merged; the same defect class as the process-steps orphan that PR fixed, in a second file.
+
+**Seven transitions drop a price key, not the three the issue named.** Beyond `removePrice` and
+`removeLine`, a successful save re-keys through `adopt`: a row added client-side is promoted from
+its minted `new-N` to a real id, and — the surprising one — a surviving row whose step code changed
+is soft-deleted and re-minted server-side under a new id, orphaning a draft on a row nobody removed.
+`discardChanges` orphans too, and it is also the control that ought to clear them. So the fix is
+**two pruners answering different questions** (`src/lib/break-drafts.ts`): a caller that knows what
+it destroyed names those keys (`dropBreakDrafts`, the `ProcessStepsSection.dropDrafts` shape), while
+`adopt` — which replaced the whole tree and cannot name anything — **INTERSECTS against what
+survived** (`retainBreakDrafts`). The intersection is load-bearing and a reset there would be a new
+silent-loss bug: close, reopen and attach-part all adopt a detail carrying identical price ids, and
+all three stay enabled with a draft typed, since they gate on `dirty`. Discard now gates on the
+draft as well, so there is a control; the badge deliberately does not, the `SaveButton.alsoUnsaved`
+precedent — badging work Save cannot send reads as a broken control.
+
+**Extracted to a `src/lib/` leaf because the precedent's own pruner has no test at all.** Vitest is
+node-only with no component renderer, so an inline pruner cannot be mutation-proven; the leaf holds
+the decisions and the component keeps the setState. `tests/break-drafts.test.ts` adds 26 assertions
+plus a source sweep pinning all four prune sites and the Discard/badge asymmetry — every one of them
+verified RED against eight separate mutations (drop the call in `removePrice`; make `adopt` clear
+wholesale; make the intersection a reset; delete the identity bailout; make the predicate
+key-count; ignore `cur` in the patcher; drop one key instead of the line's; revert the Discard
+gate). Scope note, since it would be easy to overclaim: this never blocked quote printing — that
+gate reads the page's local `dirty`, not `useUnsavedPresent()`.
+
+Gates: **3819 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. No manual re-capture:
+nothing here changes a pixel in the clean state the capture photographs. Sibling issues #279
+(`useBulkGrid.dirty` means "overlay non-empty", so a revert-to-original still prompts), #275, #276
+and #277 remain open.
+
 **2026-09-04 (third pass) — A CONTROL THAT FILES PAPER NOW REFUSES TO RUN OVER A DIRTY EDITOR.**
 Stacked on the unsaved-edit guard below, and a different defect from it: rounds 4-7 of that PR's
 review kept surfacing findings that were **not** unsaved-edit problems at all — they were
