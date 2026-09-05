@@ -24,6 +24,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { RequirementBlock, type ReadingPayload } from "./RequirementBlock";
+import { useUnsavedPresent } from "@/lib/use-unsaved-section";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/certs.ts's `CertDetail`/`CertRequirementDetail`/
@@ -210,6 +211,9 @@ export function CertDetail({ id }: { id: string }) {
   const printGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Certification is voided — no new documents can be produced for it" }
     : gate(perms, "certs.view");
+
+  // Any requirement block on this page holding unsaved readings — read for the Print button below.
+  const unsavedReadings = useUnsavedPresent();
 
   // Voided banner's reason (ShipmentDetail.tsx precedent) — safe to key on `voided` alone: once
   // voided, no mutator can touch the cert again, so the delete entry is the cert's own newest.
@@ -507,9 +511,21 @@ export function CertDetail({ id }: { id: string }) {
         {/* §5.16: while a print is in flight the button is disabled for a reason the gate cannot
             name (printGate.title is undefined when allowed), so the in-progress state says why
             itself (fix-wave 2026-08-06). */}
+        {/* Unsaved readings BLOCK the print, they do not merely warn (Codex P1, round 5). A print
+            sends nothing local: it archives the readings the SERVER holds, permanently, under this
+            cert's name. Printing over an unsaved requirement therefore produces paper that
+            disagrees with the screen the operator is looking at — and on a FIRST print the reload
+            afterwards can arm the after-print permission gate, leaving those local edits read-only
+            and unsavable, so the disagreement becomes permanent in both directions. This is the one
+            place the guard refuses rather than asks: a discarded edit can be retyped, a wrong
+            certificate cannot be unissued. */}
         <button type="button" onClick={() => void printCertAction()}
-                disabled={printGate.disabled || printing}
-                title={printing ? "A print is already in progress — wait for it to finish" : printGate.title}
+                disabled={printGate.disabled || printing || unsavedReadings}
+                title={printing
+                  ? "A print is already in progress — wait for it to finish"
+                  : unsavedReadings
+                    ? "Save the readings first — a print archives what the server holds, not what is on screen"
+                    : printGate.title}
                 className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
           {printing ? "Printing…" : "Print certification"}
         </button>

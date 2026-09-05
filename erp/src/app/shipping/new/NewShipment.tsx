@@ -33,7 +33,7 @@ import { useLatest } from "@/lib/use-latest";
 import { submitWithConflictRetry } from "@/lib/idempotent-save";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
-import { useUnsavedSection } from "@/lib/use-unsaved-section";
+import { useUnsavedSection, confirmDiscard } from "@/lib/use-unsaved-section";
 import {
   LinesGridView, ContainersGridView, SerialsGridView,
   prefillLineRow, prefillContainerRow, prefillSerialRow,
@@ -265,6 +265,17 @@ export function NewShipment() {
 
   function pickCustomer(id: string) {
     if (id === customerId) return;
+    // Switching customer resets `selected` — every picked order and its line/container/serial
+    // draft — and that is a destruction with no click on a link and no unload, so no Shell guard
+    // sees it (Codex P1, round 5; the same shape as the receivables apply-panel collapse). Ask
+    // first. The select is CONTROLLED by `customerId`, so returning here leaves it showing the
+    // customer the operator actually still has.
+    // Everything this reset DESTROYS, not just the orders: it also clears the ship-to and the
+    // credit-hold override reason, so typing either with no order added yet was wiped without
+    // a word (Codex P2, round 6). The condition has to name the same state the reset does.
+    const customerOwnedWork =
+      selected.length > 0 || shipToAddressId !== "" || creditHoldReason.trim() !== "";
+    if (customerOwnedWork && !confirmDiscard()) return;
     setCustomerId(id);
     // Everything downstream of the customer is that customer's own data — a switch resets it all
     // (orders selected, ship-to, the override reason). Header text fields are customer-neutral

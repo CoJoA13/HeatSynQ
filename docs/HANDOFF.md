@@ -60,6 +60,47 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-04 (third pass) — A CONTROL THAT FILES PAPER NOW REFUSES TO RUN OVER A DIRTY EDITOR.**
+Stacked on the unsaved-edit guard below, and a different defect from it: rounds 4-7 of that PR's
+review kept surfacing findings that were **not** unsaved-edit problems at all — they were
+destructive actions running over stale SERVER state, which the dirty registry merely made visible
+for the first time. Two shapes, one rule.
+
+**ARCHIVES paper.** A print sends no local overlay: it renders from server state and files the
+result permanently. **Printing a certification while readings are unsaved archives the SERVER's
+readings**, under that cert's name; on a FIRST print the reload afterwards can arm the after-print
+permission gate, so the local edits end up read-only and unsavable and the disagreement is permanent
+in both directions. **Finalizing an invoice with unsaved lines freezes the SERVER's lines**, and the
+finalized status that returns disables the grid's own Save, stranding the overlay with the invoice
+already issued. Six paths now carry the rule — cert print, invoice finalize, invoice print, the
+shipment ticket and BOL prints, quote print and traveler print — because gating one of a pair was
+half a fix every single time: whatever refuses to finalize must also refuse to print, since both
+file paper from the same server state. These REFUSE rather than ask (`useUnsavedPresent`, whose
+docstring states the caveat that the registry reads as "this page's editors" only because one page
+is mounted at a time): a discarded edit can be retyped, a wrong certificate cannot be unissued.
+
+**REPLACES server rows** — the shape the first six missed. `recalculateInvoice` deletes and
+recreates the whole line set, so every existing row id disappears and `useBulkGrid` drops the
+pending edit and removal overlays as ORPHANS: not wrong paper, silently discarded money. Load
+re-split does the same to the loads grid. The in-page destroyers ASK rather than refuse (the
+receivables apply-panel collapse, the new-shipment customer switch, load re-split): unlike a print,
+overwriting the draft may be exactly what the operator intends, and none of them is a click on a
+link or an unload, so no Shell guard would ever see them.
+
+**The honest caveat, recorded in CLAUDE.md at the rule itself: this list is a census by HAND, not by
+test.** Four successive review rounds each found another path, which is the signature of an
+incomplete enumeration rather than a converging one. There is also no unit test for the refusals —
+they are render-time conditionals in React components, and this repo's vitest suite has no component
+renderer — so the coverage is `unsaved-guard.test.ts` on the registry underneath plus the E2E flows
+proving the clean path still prints. The mechanical sweep is the better next step, and until it
+exists any new action that files a document or replaces a row set has to be gated by hand.
+Gates: **3785 tests / 221 files** and `tsc`/`eslint` clean on this branch; E2E **25/25 PASS, zero
+retries** on the pre-split tree, which differs from this branch by one merged import line — CI
+re-runs the suite here. `loads-after-print`, `quotes` and `invoice-shipped-order` drive three of
+the newly gated controls, and Playwright auto-dismisses dialogs, so a wrongly-armed confirm fails
+the run rather than passing quietly. No manual re-capture: none of these gates changes a pixel in
+the clean state the capture photographs, and the churn a re-run produces is reseed clock times.
+
 **2026-09-04 (second pass) — THE HISTORY PANEL READS, AND UNSAVED GRID EDITS CAN NO LONGER VANISH.**
 Two findings from a UI review that followed the nav work. (1) `HistoryPanel` stringified every
 changed field with a bare `JSON.stringify`, so a SNAPSHOT_INCLUDE relation rendered as minified JSON

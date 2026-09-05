@@ -21,7 +21,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
-import { useUnsavedSection } from "@/lib/use-unsaved-section";
+import { useUnsavedSection, confirmDiscard } from "@/lib/use-unsaved-section";
 import {
   RECEIPT_BATCH_STATUS_LABELS, APPLICATION_TYPE_LABELS,
   type ReceiptBatchStatusValue, type ApplicationTypeValue,
@@ -802,7 +802,17 @@ export function BatchDetail({ id }: { id: string }) {
                       {/* Not permission-gated: expanding shows a read-only view built from
                           receivables.view-gated data the operator already needed to reach this
                           page — the write-side controls inside are what carry the money gates. */}
-                      <button onClick={() => setExpandedPaymentId(expandedPaymentId === p.id ? null : p.id)}
+                      {/* Collapsing this row — or opening a different payment — UNMOUNTS the apply
+                          panel and destroys its draft, and neither is a navigation, so no Shell
+                          guard sees it and the hook's cleanup just clears the registration on the
+                          way out. The same question has to be asked here (Codex P1 on #272): an
+                          in-page unmount discards typed work exactly as thoroughly as leaving the
+                          page does. `confirmDiscard` reads the shared registry, which is how a
+                          parent can ask about a child's draft without owning its state. */}
+                      <button onClick={() => {
+                                if (!confirmDiscard()) return;
+                                setExpandedPaymentId(expandedPaymentId === p.id ? null : p.id);
+                              }}
                               className="text-xs text-blue-700 underline">
                         {expandedPaymentId === p.id ? "Hide" : "Apply"}
                       </button>

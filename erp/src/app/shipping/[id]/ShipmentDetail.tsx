@@ -22,7 +22,7 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
 import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
-import { confirmDiscard } from "@/lib/use-unsaved-section";
+import { confirmDiscard, useUnsavedPresent } from "@/lib/use-unsaved-section";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/shippers.ts's exported row shapes — not imported from
@@ -397,9 +397,17 @@ export function ShipmentDetail({ id }: { id: string }) {
   // the route; a voided shipment refuses NEW prints while stored ones stay downloadable (§5.6), so
   // the button says exactly that (§5.16 — disabled with a truthful title, never hidden). The
   // DocumentsSection.tsx print shape, minus the auto-print machinery this page has no entry for.
+  // Unsaved line/container/serial grids block the ticket and BOL prints (Codex P1, round 6). Those
+  // callbacks generate and ARCHIVE paperwork from server state and send no local overlay, so an
+  // operator could permanently file a packing list or bill of lading carrying the pre-edit
+  // quantities, containers or serials while the screen shows the edited ones. Same refusal as the
+  // invoice and the certification: a discarded edit can be retyped, filed paper cannot be unfiled.
+  const unsavedGrids = useUnsavedPresent();
   const printGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Shipment is voided — stored prints stay available" }
-    : docsGate;
+    : unsavedGrids
+      ? { allowed: false, disabled: true, title: "Save the grid changes first — a print archives what the server holds" }
+      : docsGate;
   // The cert checkbox (§3.14) needs certs.view on top: the archived paper is certs-area paper
   // (the route enforces the same pair), so the §5.16 tooltip names the missing permission and the
   // box unchecks itself rather than sending a request that can only 403.

@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import type { OrderLoad } from "./page";
+import { useUnsavedPresent } from "@/lib/use-unsaved-section";
 
 /** Mirrors `DocumentMeta` (src/server/documents.ts, Phase 4 Task 3) — a local type, not an
  *  import, for the usual reason (CLAUDE.md): a client component pulling from src/server/** drags
@@ -100,9 +101,15 @@ export function DocumentsSection({
 
   // Printing is disabled on a voided order (spec §5c: new prints refused, stored prints stay
   // readable), and on a caller without orders.view — disabled with a tooltip, never hidden (§5.16).
+  // The order hub's grids (Containers, Loads, Serials, Charges) are registered editors, and
+  // `readTravelerData` reads the SERVER's containers and loads — so a traveler printed over an
+  // unsaved grid archives quantities the screen does not show (Codex P1, round 7).
+  const unsavedGrids = useUnsavedPresent();
   const printGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Order is voided — stored prints stay available" }
-    : viewGate;
+    : unsavedGrids
+      ? { allowed: false, disabled: true, title: "Save the changes first — a print archives what the server holds" }
+      : viewGate;
 
   const print = useCallback(async (loadNumber?: number) => {
     setPrinting(true);
