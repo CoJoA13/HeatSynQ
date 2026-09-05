@@ -23,7 +23,7 @@
 // reachable by a human: the refusal names the customer and links to their record; an actor holding
 // `override_credit_hold` gets the override with a REQUIRED reason; an actor without it sees the
 // refusal with no dead-end controls (§5.16 — the disabled Save says why).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
@@ -193,6 +193,21 @@ export function NewShipment() {
       || creditHoldReason.trim() !== ""
     );
   useUnsavedSection(draftStarted, "New shipment");
+
+  /**
+   * Whether this form is still on screen, read after the create POST settles.
+   *
+   * KNOWN LIMITATION, stated because it is not fully fixed: leaving while a save is in flight
+   * still creates the shipment, even though the prompt the operator accepted said "discard".
+   * Nothing on the client can un-send a request the server has already taken, and aborting the
+   * fetch would not help — `submitWithConflictRetry` sends a `clientRequestId` precisely so a
+   * retry lands as the same write, not a second one. The complete fix is for the guard to REFUSE
+   * rather than ask while a save is pending, which needs a blocking mode `unsaved-guard.ts` does
+   * not have. What this ref does fix is the part that is ours: a settled save no longer navigates
+   * a page the operator has already left.
+   */
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const customersGate = gate(perms, "customers.view");
   const ordersGate = gate(perms, "orders.view");
@@ -439,6 +454,12 @@ export function NewShipment() {
     try {
       const result = await submitWithConflictRetry(body, (b) =>
         api<CreateResult>("/api/shippers", { method: "POST", body: JSON.stringify(b) }));
+      // The operator can leave while this POST is in flight — the guard ASKS rather than blocks,
+      // and accepting it navigates. Landing here afterwards used to run `router.push` and pull
+      // them back to a page they had just chosen to leave (Codex P1 on #272). The request cannot
+      // be un-sent, so the shipment does exist; what this stops is the navigation, which is the
+      // half that is still ours to control. See the note on `mounted` for the half that is not.
+      if (!mounted.current) return;
       if (result.warnings.length > 0) {
         // §5.7 warnings returned by the save are SHOWN, never raced past by the navigate.
         setSaving(false);

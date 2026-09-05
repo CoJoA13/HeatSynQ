@@ -5,7 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { useLatest } from "@/lib/use-latest";
 import { visibleNav, visibleAdmin } from "@/lib/nav";
-import { unsavedLabels, shouldGuardNavigation, subscribeUnsaved, unsavedCount } from "@/lib/unsaved-guard";
+import {
+  unsavedLabels, shouldGuardNavigation, subscribeUnsaved, unsavedCount, leavesCurrentPage,
+} from "@/lib/unsaved-guard";
 import { confirmDiscard } from "@/lib/use-unsaved-section";
 
 type Me = { displayName: string; permissions: string[] };
@@ -227,6 +229,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
     setOpen(false);
   }
 
+  /**
+   * `confirmDiscard`, but only when the destination is a different page.
+   *
+   * The click guard gets this for free — `shouldGuardNavigation` already refuses to prompt for the
+   * path already open — but these two search paths call `router.push` directly and so asked
+   * unconditionally. Searching for the order you already have open is a routine lookup, and
+   * pushing to the same keyed detail page does not unmount the editor: accepting the prompt
+   * discarded nothing, and the edits stayed registered afterwards, so it was a repeatable warning
+   * about nothing (Codex P2 on #272). Same rule, one function, both callers.
+   */
+  function confirmDiscardBefore(href: string): boolean {
+    const [path] = href.split("#");
+    return leavesCurrentPage(path, pathname) ? confirmDiscard() : true;
+  }
+
   async function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
       closeSearchDropdown();
@@ -240,7 +257,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     const data = await runSearch(term);
     if (!data) return; // runSearch already recorded the failure via searchError
     if (data.exactOrderId) {
-      if (!confirmDiscard()) return;
+      if (!confirmDiscardBefore(`/orders/${data.exactOrderId}`)) return;
       setOpen(false);
       setQuery("");
       setResults(null);
@@ -249,7 +266,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   }
 
   function selectResult(href: string) {
-    if (!confirmDiscard()) return;
+    if (!confirmDiscardBefore(href)) return;
     setOpen(false);
     setQuery("");
     setResults(null);

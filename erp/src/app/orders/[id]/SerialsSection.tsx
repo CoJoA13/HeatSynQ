@@ -140,7 +140,8 @@ function LineSerialsEditor({
         </p>
       )}
       <SaveButton label="Save serials" section="Serials" gate={editGate}
-                    dirty={grid.dirty} onSave={() => void save()} />
+                    dirty={grid.dirty} alsoUnsaved={rangeInput.trim() !== ""}
+                    onSave={() => void save()} />
     </div>
   );
 }

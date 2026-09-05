@@ -105,7 +105,21 @@ export function shouldGuardNavigation(i: NavIntent): boolean {
   // "Export list to Excel"). Compared with the trailing slash so `/apiary` stays a page.
   if (path === "/api" || path.startsWith("/api/")) return false;
   // Re-entering the page already open discards nothing either.
-  return path !== "" && path !== i.currentPath;
+  return leavesCurrentPage(path, i.currentPath);
+}
+
+/**
+ * Whether navigating to `href` actually takes the operator off `currentPath`.
+ *
+ * Extracted so the click guard above and Shell's PROGRAMMATIC navigations answer it identically.
+ * `router.push` to the page already open does not unmount the editor, so the edits survive and a
+ * discard prompt there warns about nothing — and searching for the order you already have open is
+ * a common lookup, so that false prompt fires often enough to teach people to click through
+ * (Codex P2 on #272). Takes a bare path: callers that may hold a fragment strip it first, as
+ * `shouldGuardNavigation` does.
+ */
+export function leavesCurrentPage(path: string, currentPath: string): boolean {
+  return path !== "" && path !== currentPath;
 }
 
 /** The prompt. It NAMES the sections at risk: "you have unsaved changes" is the wording everyone

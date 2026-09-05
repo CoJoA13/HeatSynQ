@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, subscribeUnsaved,
-  shouldGuardNavigation, confirmMessage, unsavedCount, type NavIntent,
+  shouldGuardNavigation, confirmMessage, unsavedCount, leavesCurrentPage, type NavIntent,
 } from "@/lib/unsaved-guard";
 
 // The pure half of the unsaved-edit guard. The registry is module-level state (the
@@ -161,6 +161,34 @@ describe("unsavedCount", () => {
     clearUnsaved(KEY);
     clearUnsaved("other");
     expect(unsavedCount()).toBe(0);
+  });
+});
+
+describe("leavesCurrentPage", () => {
+  // Extracted from `shouldGuardNavigation` so Shell's PROGRAMMATIC navigations can ask the same
+  // question. Shell's search called `confirmDiscard()` unconditionally, so searching for the order
+  // already open prompted even though `router.push` to the same keyed page unmounts nothing and
+  // discards nothing — a repeatable false warning on a routine lookup (Codex P2 on #272).
+  it("is false for the page already open, so re-entering it prompts about nothing", () => {
+    expect(leavesCurrentPage("/orders/abc", "/orders/abc")).toBe(false);
+  });
+
+  it("is true for a different page", () => {
+    expect(leavesCurrentPage("/orders/def", "/orders/abc")).toBe(true);
+  });
+
+  it("is false for an empty path, which names no destination at all", () => {
+    expect(leavesCurrentPage("", "/orders/abc")).toBe(false);
+  });
+
+  it("is the SAME rule the click guard applies, not a second copy of it", () => {
+    // Mutation-proof: if `shouldGuardNavigation` stopped delegating, these two would drift and one
+    // of the call sites would go back to prompting on the page it is already on.
+    const here = "/orders/abc";
+    for (const href of ["/orders/abc", "/orders/def", ""]) {
+      expect(shouldGuardNavigation(intent({ href, currentPath: here })))
+        .toBe(leavesCurrentPage(href, here));
+    }
   });
 });
 

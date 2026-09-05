@@ -192,7 +192,6 @@ export function QuoteDetail({ id }: { id: string }) {
   const patch = header !== null && baseHeader !== null ? headerPatch(header, baseHeader) : {};
   const linesDirty = detail !== null && linesComparable(lines) !== linesComparable(lineFormsFrom(detail));
   const dirty = Object.keys(patch).length > 0 || linesDirty;
-  useUnsavedSection(dirty, "Quote");
 
   // ---- Gates (§5.16: every gated control disabled WITH the reason, via the shared helper). ----
   const closed = detail?.status === "CLOSED";
@@ -555,6 +554,18 @@ export function QuoteDetail({ id }: { id: string }) {
   // Per-price "add a break" draft, keyed by price KEY (the PricingSection breakDrafts shape).
   const [breakDrafts, setBreakDrafts] = useState<Record<string, { threshold: string; price: string }>>({});
   const draftFor = (priceKey: string) => breakDrafts[priceKey] ?? { threshold: "", price: "" };
+
+  // Registered HERE rather than beside `dirty` above, because a break draft is real work that
+  // `dirty` cannot see: `dirty` diffs the header and `lines` against the loaded detail, and a
+  // threshold/price typed into the Add break controls does not reach `lines` until Add break is
+  // clicked. So a fully typed break was discardable by any navigation or reload with no warning,
+  // from a file the sweep already counted as registered (Codex P1 on #272) — the same
+  // file-registers-therefore-covered blind spot the per-flag assertion closed for Save buttons.
+  // `dirty` itself is left alone: it answers "does the server disagree with this form", which is
+  // what the Save and print gates need, and an unadded break changes neither.
+  const breakDraftStarted =
+    Object.values(breakDrafts).some((d) => d.threshold.trim() !== "" || d.price.trim() !== "");
+  useUnsavedSection(dirty || breakDraftStarted, "Quote");
   function addBreak(lineKey: string, priceKey: string) {
     const draft = draftFor(priceKey);
     if (!draft.threshold || !draft.price) return;
