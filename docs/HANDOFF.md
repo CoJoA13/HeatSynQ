@@ -60,16 +60,16 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-05 (fourth pass) — A REMOVED STEP'S DRAFT NO LONGER SURVIVES ITS OWN DELETION (#283).**
-Removing a process step from a LOCKED revision cuts N+1, and `workingRevision` copies EVERY step —
-it cannot know why it was called — so the mapping it returns carried the step `removeStep` was
-about to delete. The editor followed that mapping: `remapDrafts` moved the removed step's unsaved
-draft onto the copy the same transaction had just hard-deleted, and the `dropDrafts([stepId])` on
-the next line then deleted a key holding nothing. The draft survived under a dead id, the
-registration's fail-closed arm counted it dirty on every revision, and no non-destructive control
-could clear it — the #278 shape, in the very file #272 fixed it in. The comment above those two
-calls claimed the drop came second precisely so it would see the pre-remap key: the exact opposite
-of what happens, and the #233 comment-overclaim class.
+**2026-09-05 (fourth pass) — A REMOVED STEP'S DRAFT NO LONGER SURVIVES ITS OWN DELETION (#283,
+merged `3cb7a5a`, PR #289, squash).** Removing a process step from a LOCKED revision cuts N+1, and
+`workingRevision` copies EVERY step — it cannot know why it was called — so the mapping it returns
+carried the step `removeStep` was about to delete. The editor followed that mapping: `remapDrafts`
+moved the removed step's unsaved draft onto the copy the same transaction had just hard-deleted, and
+the `dropDrafts([stepId])` on the next line then deleted a key holding nothing. The draft survived
+under a dead id, the registration's fail-closed arm counted it dirty on every revision, and no
+non-destructive control could clear it — the #278 shape, in the very file #272 fixed it in. The
+comment above those two calls claimed the drop came second precisely so it would see the pre-remap
+key: the exact opposite of what happens, and the #233 comment-overclaim class.
 
 **More reachable than the issue said.** It was filed as latent because it needs a cut. But an order
 save locks the part's current revision (`lockCurrentRevision`, `order-create.ts`), so for any part
