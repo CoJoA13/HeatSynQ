@@ -37,8 +37,8 @@ function LineSerialsEditor({
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<Fields>();
-  const rows = grid.compose(serials, (s) => ({ serial: s.serial, description: s.description }));
+  const grid = useBulkGrid(serials, (s): Fields => ({ serial: s.serial, description: s.description }));
+  const rows = grid.rows;
   const [rangeInput, setRangeInput] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
 

@@ -241,8 +241,8 @@ function InvoiceLinesGrid({
   applyMutation: (run: () => Promise<InvoiceMutationResult>) => Promise<void>;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<LineFields>();
-  const rows = grid.compose(lines, toLineFields);
+  const grid = useBulkGrid(lines, toLineFields);
+  const rows = grid.rows;
   const partOpRows = rows.filter((r) => r.kind === "PART" || r.kind === "OPERATION");
   const otherRows = rows.filter((r) => r.kind !== "PART" && r.kind !== "OPERATION");
 

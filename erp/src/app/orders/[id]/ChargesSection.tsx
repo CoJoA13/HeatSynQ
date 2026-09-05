@@ -19,11 +19,11 @@ export function ChargesSection({
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<Fields>();
-  const rows = grid.compose(charges, (c) => ({
+  const grid = useBulkGrid(charges, (c): Fields => ({
     description: c.description,
     amount: c.amount === null ? "" : String(c.amount),
   }));
+  const rows = grid.rows;
 
   function patch(row: { key: string; isNew: boolean }, field: keyof Fields, value: string) {
     if (row.isNew) grid.updateAdded(row.key, { [field]: value } as Partial<Fields>);

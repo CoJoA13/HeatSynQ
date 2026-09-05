@@ -54,13 +54,13 @@ function LinesGrid({
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<LineFields>();
   const liveLines = lines.filter((l): l is typeof l & { orderLineId: string } => l.orderLineId !== null);
   const releasedLines = lines.filter((l) => l.orderLineId === null);
-  const rows = grid.compose(liveLines, (l) => ({
+  const grid = useBulkGrid(liveLines, (l): LineFields => ({
     orderLineId: l.orderLineId, qty: String(l.qty), weight: String(l.weight),
     lineComplete: l.lineComplete ? "true" : "false",
   }));
+  const rows = grid.rows;
   const usedLineIds = new Set(rows.map((r) => r.orderLineId));
   const candidates = (catalog?.lines ?? []).filter((c) => !usedLineIds.has(c.id));
 
@@ -138,10 +138,10 @@ function ContainersGrid({
   catalog: OrderCatalog | undefined; editGate: Gate; applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<ContainerFields>();
   const liveContainers = containers.filter((c): c is typeof c & { orderContainerId: string } => c.orderContainerId !== null);
   const releasedContainers = containers.filter((c) => c.orderContainerId === null);
-  const rows = grid.compose(liveContainers, (c) => ({ orderContainerId: c.orderContainerId, count: String(c.count) }));
+  const grid = useBulkGrid(liveContainers, (c): ContainerFields => ({ orderContainerId: c.orderContainerId, count: String(c.count) }));
+  const rows = grid.rows;
   const usedIds = new Set(rows.map((r) => r.orderContainerId));
   const candidates = (catalog?.containers ?? []).filter((c) => !usedIds.has(c.id));
 
@@ -198,10 +198,10 @@ function SerialsGrid({
   catalog: OrderCatalog | undefined; editGate: Gate; applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<SerialFields>();
   const liveSerials = serials.filter((sr): sr is typeof sr & { orderSerialId: string } => sr.orderSerialId !== null);
   const releasedSerials = serials.filter((sr) => sr.orderSerialId === null);
-  const rows = grid.compose(liveSerials, (s) => ({ orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper ? "true" : "false" }));
+  const grid = useBulkGrid(liveSerials, (s): SerialFields => ({ orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper ? "true" : "false" }));
+  const rows = grid.rows;
   const usedIds = new Set(rows.map((r) => r.orderSerialId));
   const candidates = (catalog?.serials ?? []).filter((s) => !usedIds.has(s.id));
 

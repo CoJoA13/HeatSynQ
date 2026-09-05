@@ -35,8 +35,7 @@ export function ContainersSection({
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
-  const grid = useBulkGrid<Fields>();
-  const rows = grid.compose(containers, (c) => ({
+  const grid = useBulkGrid(containers, (c): Fields => ({
     typeId: c.typeId,
     count: String(c.count),
     qty: c.qty === null ? "" : String(c.qty),
@@ -48,6 +47,7 @@ export function ContainersSection({
     // unrelated container save.
     customerContainerId: c.customerContainerId,
   }));
+  const rows = grid.rows;
 
   function patch(row: { key: string; isNew: boolean }, field: keyof Fields, value: string) {
     if (row.isNew) grid.updateAdded(row.key, { [field]: value } as Partial<Fields>);
