@@ -60,6 +60,44 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 (fourth pass) — A REMOVED STEP'S DRAFT NO LONGER SURVIVES ITS OWN DELETION (#283).**
+Removing a process step from a LOCKED revision cuts N+1, and `workingRevision` copies EVERY step —
+it cannot know why it was called — so the mapping it returns carried the step `removeStep` was
+about to delete. The editor followed that mapping: `remapDrafts` moved the removed step's unsaved
+draft onto the copy the same transaction had just hard-deleted, and the `dropDrafts([stepId])` on
+the next line then deleted a key holding nothing. The draft survived under a dead id, the
+registration's fail-closed arm counted it dirty on every revision, and no non-destructive control
+could clear it — the #278 shape, in the very file #272 fixed it in. The comment above those two
+calls claimed the drop came second precisely so it would see the pre-remap key: the exact opposite
+of what happens, and the #233 comment-overclaim class.
+
+**More reachable than the issue said.** It was filed as latent because it needs a cut. But an order
+save locks the part's current revision (`lockCurrentRevision`, `order-create.ts`), so for any part
+that has ever been ordered this IS the branch a removal takes. The trigger is narrower than filed
+in one way and wider in another: only the REMOVED step's own draft orphans (every other step's is
+carried correctly), but the setters record an entry on any keystroke with no dirty check, so typing
+one character into a step and then deleting that step is enough — typing it straight back out does
+not help, because the arm fires on the entry's EXISTENCE.
+
+**Fixed at both ends, and the server end is the one that closes the class.** `removeStep` now prunes
+any entry pointing at the row it deleted, by VALUE so it holds however the caller named the step —
+a mutation must not advertise a mapping onto something it destroyed, or every client that follows it
+inherits the orphan. The client is made independent of that anyway: the drop and the re-key are now
+ONE call (`stepEditsAfterRemoval`), drop first, so the ordering is not a thing a call site can get
+wrong. `dropDrafts`/`remapDrafts` moved into `src/lib/step-drafts.ts` as values, which is what makes
+any of it provable — they were inline, and CLAUDE.md's own #281 paragraph had already noted the
+precedent shipped with no test at all.
+
+**Found while verifying it, and deliberately NOT fixed here: a separate race.** `refreshAfter`
+reloads asynchronously, so between the re-key and the rows re-rendering under their new ids the old
+rows stay on screen and typeable — and a keystroke in that window is filed under a pre-cut id that
+nothing will ever re-key. That is every mutator, not just removal, and it needs a different fix from
+this one. Filed rather than folded in.
+
+Gates: **3852 tests / 222 files**, `tsc`/`eslint` clean, E2E **25/25 PASS**. Five mutations verified
+red: the server prune; the composition order inside the leaf; the remap's unmapped-key fallback; the
+drop's identity bailout; and the call site reverted to the two-call pair. No manual re-capture.
+
 **2026-09-05 (third pass) — THE GRID OWNS THE ROW'S IDENTITY, AND A FIELDS TYPE CAN NO LONGER TAKE
 IT (#281, merged `86ff8b5`, PR #286, squash).** `useBulkGrid` supplies `key`/`isNew` on every
 composed row and `clientId` on every added one, but the composition spread the caller's fields LAST

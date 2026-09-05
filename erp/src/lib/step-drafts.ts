@@ -117,3 +117,72 @@ export function editsAfterSave(
   if (!keepInstruction && values.size === 0) return null;
   return { instruction: keepInstruction ? edits.instruction : undefined, values };
 }
+
+// --- The overlay's KEYS: what a structural mutation does to the map itself ---------------------
+//
+// A revision cut copies every step under brand-new ids, so a mutation against a LOCKED revision
+// hands back an old->new mapping the overlay has to be carried through, or every unsaved edit on
+// every other step is silently replaced by persisted values (Codex, PR #22). A removal is the
+// other direction: the destroyed step's overlay has to GO, or the registration's fail-closed arm
+// (an edit key with no entry in `originals`) reports the page unsaved forever with nothing on
+// screen able to clear it.
+//
+// Both were inline in ProcessStepsSection and therefore untestable — vitest runs "node" with no
+// component renderer — which is how #283 shipped: the two were sequenced the wrong way round under
+// a comment asserting the opposite. Here they are values, and the composition that has to be
+// ordered correctly is a single function rather than two calls a caller must sequence.
+
+/** What the user has typed, keyed by step id. `Map` rather than `Record` — the component's own
+ *  state shape, and the keys are opaque ids that must never meet `Object.prototype`. Taken and
+ *  returned as the same type so a caller can hand these straight to `setEdits`; none of them
+ *  mutates its argument, they return either a fresh map or the one they were given. */
+export type StepEditMap<E> = Map<string, E>;
+
+/**
+ * Drop the overlay for steps a mutation DESTROYED — or `"all"` when the whole recipe was replaced.
+ *
+ * Returns the SAME map when nothing matches, so a drop that finds nothing is a React state bailout
+ * rather than a re-render. That bailout also makes a MISSED drop completely silent, which is what
+ * let #283 sit unnoticed: the fix is to call this with the right keys, never to notice it failed.
+ */
+export function dropStepEdits<E>(cur: StepEditMap<E>, stepIds: readonly string[] | "all"): StepEditMap<E> {
+  if (stepIds === "all") return cur.size === 0 ? cur : new Map<string, E>();
+  if (!stepIds.some((id) => cur.has(id))) return cur;
+  const next = new Map(cur);
+  for (const id of stepIds) next.delete(id);
+  return next;
+}
+
+/**
+ * Re-key the overlay through a cut's old->new mapping.
+ *
+ * An UNMAPPED key is kept under its own name, deliberately: that is right for a step the cut did
+ * not touch, and it is why this cannot also do the dropping — "renamed" and "destroyed" are
+ * indistinguishable from the map alone, so the caller that knows what it destroyed has to say so.
+ * An empty mapping means no cut happened and is a no-op.
+ */
+export function remapStepEdits<E>(cur: StepEditMap<E>, stepIdMap: Record<string, string>): StepEditMap<E> {
+  if (Object.keys(stepIdMap).length === 0) return cur;
+  const next = new Map<string, E>();
+  for (const [stepId, e] of cur) next.set(stepIdMap[stepId] ?? stepId, e);
+  return next;
+}
+
+/**
+ * The overlay after a step REMOVAL: the removed step's own draft goes, and everything else is
+ * carried through the cut's mapping.
+ *
+ * ONE function because the order is the whole defect (#283). Dropping must happen FIRST, against
+ * the pre-remap key the overlay is still filed under; remapping first moves the draft to its
+ * post-cut id and the drop then deletes a key holding nothing, stranding the page. The call site
+ * had them the other way round beneath a comment asserting this exact rationale in reverse.
+ *
+ * Correct even when the server hands back a mapping for the removed step — which it no longer does
+ * (`removeStep` prunes any entry pointing at the row it deleted) — because by then there is
+ * nothing left under that key to move.
+ */
+export function stepEditsAfterRemoval<E>(
+  cur: StepEditMap<E>, stepIdMap: Record<string, string>, removedStepId: string,
+): StepEditMap<E> {
+  return remapStepEdits(dropStepEdits(cur, [removedStepId]), stepIdMap);
+}

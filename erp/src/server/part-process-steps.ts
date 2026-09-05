@@ -334,6 +334,16 @@ export async function removeStep(
           await tx.partProcessStep.update({ where: { id: s.id }, data: { position: s.position - 1 } });
         }
       }, { tx });
+      // No entry may point at the row this transaction just deleted (#283). `workingRevision`
+      // copies EVERY step of a locked revision — it cannot know why it was called — so on the cut
+      // branch the map it returns still carries `<removed old id> -> <copy>`, and the copy is what
+      // was deleted above. A client that follows the map lands on a dead id: the process editor
+      // did, re-keying the removed step's unsaved draft onto it, after which nothing on screen
+      // could reach or clear the draft and the page stayed registered unsaved for good. Deleted by
+      // VALUE rather than by the caller's `stepId`, so it holds however the caller named the step.
+      if (stepIdMap) {
+        for (const [oldId, copyId] of stepIdMap) if (copyId === step.id) stepIdMap.delete(oldId);
+      }
       return { revisionNumber: rev.revisionNumber, stepIdMap: asMapping(stepIdMap) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
