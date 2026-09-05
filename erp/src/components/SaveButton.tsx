@@ -24,15 +24,24 @@ import { useUnsavedSection } from "@/lib/use-unsaved-section";
  * `section` is the human name the prompt uses ("Containers has unsaved changes…"), so it is a
  * separate prop from `label`: the button reads "Save containers", the sentence needs "Containers".
  */
-export function SaveButton({ label, section, gate, dirty, onSave }: {
+export function SaveButton({ label, section, gate, dirty, onSave, alsoUnsaved = false }: {
   label: string;
   /** Human name of the section for the navigation prompt — capitalised, e.g. "Containers". */
   section: string;
   gate: Gate;
   dirty: boolean;
   onSave: () => void;
+  /**
+   * Work held in this section that this button CANNOT save — a value typed into an entry field but
+   * not yet committed into the grid. It arms the navigation guard without enabling Save, because
+   * the two questions are different: "is anything at risk if we leave" and "is there anything this
+   * click would write". Serials' "Add serial(s)" range box is the case that found this (Codex P1 on
+   * #272): the text is real work, reloading loses it, and a blur during unload cannot arm the
+   * listener in time — but Save has nothing to send until the range is expanded into rows.
+   */
+  alsoUnsaved?: boolean;
 }) {
-  useUnsavedSection(dirty, section);
+  useUnsavedSection(dirty || alsoUnsaved, section);
   return (
     <span className="inline-flex items-center gap-2">
       <button onClick={onSave} disabled={!gate.allowed || !dirty} title={gate.title}
@@ -41,7 +50,9 @@ export function SaveButton({ label, section, gate, dirty, onSave }: {
       </button>
       {/* Shown only while dirty, which is exactly when the difference between the two save models
           matters. The blur-save fields above never reach this state — they are already committed
-          by the time focus leaves them — so the badge's presence IS the distinction. */}
+          by the time focus leaves them — so the badge's presence IS the distinction.
+          Deliberately NOT `alsoUnsaved`: that work is still sitting visible in its own input, and
+          a badge beside a Save this click cannot enable reads as a broken control. */}
       {dirty && (
         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
           Unsaved changes

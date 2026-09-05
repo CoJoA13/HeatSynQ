@@ -166,6 +166,28 @@ export function ProcessStepsSection({
   // new ids, so without this the rebuild finds nothing to carry and every unsaved edit on every
   // other step is replaced by persisted values — the same silent loss the same-revision carry
   // already prevents, one level harder (Codex, PR #22). Empty mapping = no cut = nothing to do.
+  /**
+   * Drop the overlay for steps this page just DESTROYED on purpose.
+   *
+   * The registration below counts an edit key with no entry in `originals` as dirty, so that a
+   * draft held on another revision fails closed rather than reading as saved. A deleted or
+   * template-replaced step trips the same arm — but it is not the same situation: there is no
+   * revision to switch back to that can still SAVE it (an older revision renders read-only), so
+   * the page warned about inaccessible work on every navigation, forever, with no control able to
+   * clear it (Codex P2 on #272). `remapDrafts` cannot do this itself: it keeps unmapped keys by
+   * design, which is right for a rename and wrong for a removal, and the two are indistinguishable
+   * from the map alone. So the caller that knows what it destroyed says so.
+   */
+  function dropDrafts(stepIds: string[] | "all") {
+    setEdits((cur) => {
+      if (stepIds === "all") return cur.size === 0 ? cur : new Map();
+      if (!stepIds.some((id) => cur.has(id))) return cur;
+      const next = new Map(cur);
+      for (const id of stepIds) next.delete(id);
+      return next;
+    });
+  }
+
   function remapDrafts(stepIdMap: Record<string, string>) {
     if (Object.keys(stepIdMap).length === 0) return;
     setEdits((cur) => {
@@ -293,6 +315,9 @@ export function ProcessStepsSection({
       invalidateHistory(); // #14 item 1
       onError(null);
       remapDrafts(res.stepIdMap);
+      // The removed step's own draft goes with it — see `dropDrafts`. Ordered after the remap so
+      // the id being dropped is the pre-remap key the overlay is still filed under.
+      dropDrafts([stepId]);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
@@ -325,6 +350,10 @@ export function ProcessStepsSection({
       invalidateHistory(); // #14 item 1
       setTemplateId("");
       onError(null);
+      // Every step on the recipe was just replaced, so every draft is an orphan — and the confirm
+      // above already asked for exactly this ("Replace the current steps…"). Without it the page
+      // is permanently, unresolvably dirty; see `dropDrafts`.
+      dropDrafts("all");
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }

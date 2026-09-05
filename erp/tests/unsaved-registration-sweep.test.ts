@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // THE CENSUS BEHIND THE CLAIM. #272 said registration was a "structural guarantee" because
 // `useUnsavedSection` is called from inside the shared `SaveButton` — but that only ever bound the
@@ -17,7 +18,12 @@ import { join } from "node:path";
 // It cannot see an editor that tracks dirtiness some other way; that residual is why
 // `use-unsaved-section.ts` documents the contract in prose as well.
 
-const SRC = join(__dirname, "..", "src");
+// `import.meta.url`, not `__dirname`: this package is `"type": "module"` and every other test that
+// resolves a repo path (errors, period-locks, manual-artifacts, …) uses this idiom — this file was
+// the only `__dirname` left. Vitest's transform does define `__dirname`, so the old line ran green
+// and the suite was never broken by it; the reason to change it is that nothing else here depends
+// on that shim, and a swept source is exactly the kind of file another loader may one day read.
+const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
 /** Files whose Save control gates on a dirty flag but which legitimately do not register. Each
  *  entry states why, so removing one is a decision. */
