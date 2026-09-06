@@ -60,6 +60,56 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, PR PR_NUM).**
+#276 was filed as a `/shipping/new` bug: leaving while the create POST is in flight still creates
+the shipment, though the prompt the operator accepted said "discard". It is not one page's bug. A
+section's dirty flag means "differs from the server as loaded", so it is cleared by `grid.reset()`
+only AFTER the response lands — verified in every editor — which makes the whole duration of EVERY
+save a window where the section reads dirty and the prompt offers to discard a write that is
+committing. Fourteen registered editors, not one.
+
+**The blocking mode #276 asked for was not taken (owner ruling).** `api()` sets no timeout and no
+abort signal, so a stalled request would have refused every nav click, the search and sign-out with
+nothing anywhere able to clear it — "a guard the operator cannot clear is worse than no guard", by
+this file's own rule. The wording changes instead, and the operator keeps the choice.
+
+**Counted centrally, not registered per save.** `src/lib/in-flight-writes.ts` is a pure leaf whose
+count is incremented by `trackedFetch`, which `api()` is built on — so all ~150 write sites and
+every future one are covered with nothing to keep in step. The alternative, a `useSavePending` hook
+per editor, is a hand census of the save paths across those fourteen files, which is the shape this
+repo keeps refiling. The eleven bare `fetch` writes were converted, and
+`tests/unsaved-registration-sweep.test.ts` now refuses a bare `fetch` write so the count cannot
+quietly stop being complete.
+
+**THE REVIEW CAUGHT A REGRESSION THAT WOULD HAVE BEEN WORSE THAN THE BUG.** The counter is app-wide
+and unattributed — it knows a request is open, never which section issued it — and the first
+draft's sentence said only "it finishes either way". On the order hub (save Containers, then leave while
+Charges is still dirty) that told the operator Charges would survive. It would not. Trading a false
+"this will be discarded", which keeps people on the page, for a false "this will be saved", which
+invites them off it, is strictly worse than the untruth being fixed. The shipped sentence says BOTH:
+the open request finishes regardless, AND anything not yet saved is discarded. It also says "a
+request", not "a save", because one counted POST (`/api/templates/[id]/preview`) writes nothing.
+
+**Three more review findings, all mutation-proven before and after.** The `await` in `trackedFetch`
+is load-bearing — without it the `finally` runs at request-issue and the count is raised for zero
+ticks — and no test caught its removal; the seam itself (`confirmDiscard` passing the flag) had no
+test at all, so deleting the whole feature left the suite green; and the new bare-`fetch` detector
+failed open on four shapes (`window`/`globalThis`/`self` receivers, a `Request` first argument, a
+computed `method` key, a non-literal init) while its comments claimed the opposite. **9 mutations
+verified red**, including every one a reviewer had proved survived.
+
+**Residuals recorded at the code, not papered over.** `CustomFieldsSection` and the process-template
+page clear dirty from a FOLLOW-UP GET, so each leaves an extra round trip still showing the discard
+wording; and the three in-page destroyers that call `confirmDiscard` get a sentence about leaving
+the page that never described them — filed as **#300**, a defect that predates this and that #276
+only made more visible.
+
+Gates: **3904 tests / 224 files** (+24), `tsc`/`eslint`/`build` clean, E2E **25/25 PASS**. One
+honest caveat: the FIRST full run reported `1 failed | 3903 passed` and the failure could not be
+identified — the output was truncated before the name — while an immediate re-run was 3904/3904 and
+every sweep, every DOM-free component test and every file this change touches passed individually.
+Recorded as an unidentified flake rather than written up as green.
+
 **2026-09-05 (sixth pass) — THE ARCHIVAL/REPLACE GATE CENSUS IS DERIVED, NOT HAND-WRITTEN (#277,
 merged `723c1b4`, PR #295, squash).** CLAUDE.md carried the rule — a control that archives paper or
 replaces server rows must consult the unsaved-edit guard — and admitted in the same paragraph that
