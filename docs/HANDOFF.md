@@ -60,7 +60,7 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, PR PR_NUM).**
+**2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, PR #301).**
 #276 was filed as a `/shipping/new` bug: leaving while the create POST is in flight still creates
 the shipment, though the prompt the operator accepted said "discard". It is not one page's bug. A
 section's dirty flag means "differs from the server as loaded", so it is cleared by `grid.reset()`
