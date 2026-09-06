@@ -21,12 +21,45 @@ type AdapterMeta = {
 const stripQuotes = (field: string): string => field.replace(/^"|"$/g, "");
 
 /**
- * The columns a P2002 fired on. Measured on this stack (#40): `meta.target` is ALWAYS absent —
- * the answer lives in `meta.driverAdapterError.cause.constraint.fields`. Legacy `meta.target`
- * (string[] or string) is still consulted FIRST so this keeps working if a future adapter
- * populates it — the `isDuplicateClientRequestId` precedent (below) and its documented
- * rationale. Returns undefined when neither shape carries usable field names (e.g. the adapter's
- * no-DETAIL case, where `constraint` is omitted entirely), so the caller falls back to "value".
+ * The columns named by a unique INDEX name, or undefined if it does not follow the convention.
+ *
+ * Prisma names a unique index `Model_field_key`, or `Model_field1_field2_key` for a composite —
+ * so with `meta.modelName` in hand the columns can be read straight back out of it. This is not a
+ * new trick in this file: `fkConstraintName`'s caller already parses `Model_field_fkey` the same
+ * way, for the same reason, and this is that parse with the other suffix.
+ *
+ * It refuses anything that does not match rather than guessing, so a hand-named index falls
+ * through to "value" exactly as an unreadable error already does. Unambiguous on this schema
+ * because no column contains an underscore — asserted over the real index names in
+ * `tests/db-errors.test.ts`, not assumed, since a column named `foo_bar` would split into two.
+ */
+function fieldsFromUniqueIndexName(index: string, modelName: unknown): string[] | undefined {
+  if (typeof modelName !== "string" || modelName.length === 0) return undefined;
+  const prefix = `${modelName}_`;
+  if (!index.startsWith(prefix) || !index.endsWith("_key")) return undefined;
+  const columns = index.slice(prefix.length, -"_key".length).split("_").filter((c) => c.length > 0);
+  return columns.length > 0 ? columns : undefined;
+}
+
+/**
+ * The columns a P2002 fired on, read from whichever shape the installed adapter provides.
+ *
+ * FOUR shapes, tried in order, because the adapter has already changed once under us and the
+ * cost of keeping a dead branch is one `if`:
+ *
+ *  1. legacy `meta.target` (string or string[]) — absent on every adapter measured so far, kept
+ *     FIRST so this starts working again the day one populates it (the
+ *     `isDuplicateClientRequestId` precedent below);
+ *  2. `cause.constraint.fields` — what Prisma 7.9.x's pg adapter reported (#40);
+ *  3. `cause.constraint.index` — what **7.10.0** reports instead, parsed by name. The bump
+ *     replaced `{ fields: ["name"] }` with `{ index: "Role_name_key" }`, which silently degraded
+ *     every unique-violation message in the app from "with that name" to "with that value". Two
+ *     tests caught it; nothing else would have;
+ *  4. the driver's own message text, the last resort — the same fallback `fkConstraintName` keeps,
+ *     and the one that carried `isDuplicateClientRequestId` unharmed through this same change.
+ *
+ * Returns undefined when none of them carries usable names (the adapter omits `constraint`
+ * entirely when Postgres sends no DETAIL line), so the caller falls back to "value".
  */
 function uniqueConflictFields(err: Prisma.PrismaClientKnownRequestError): string[] | undefined {
   const meta = err.meta as AdapterMeta;
@@ -35,9 +68,23 @@ function uniqueConflictFields(err: Prisma.PrismaClientKnownRequestError): string
   if (Array.isArray(target) && target.length > 0 && target.every((f) => typeof f === "string" && f.length > 0)) {
     return target;
   }
-  const fields = meta?.driverAdapterError?.cause?.constraint?.fields;
+  const cause = meta?.driverAdapterError?.cause;
+  const fields = cause?.constraint?.fields;
   if (Array.isArray(fields) && fields.length > 0 && fields.every((f) => typeof f === "string" && f.length > 0)) {
     return fields.map(stripQuotes);
+  }
+  const index = cause?.constraint?.index;
+  if (typeof index === "string") {
+    const named = fieldsFromUniqueIndexName(stripQuotes(index), meta?.modelName);
+    if (named) return named;
+  }
+  const message = cause?.originalMessage;
+  if (typeof message === "string") {
+    const fromMessage = message.match(/unique constraint "([^"]+)"/)?.[1];
+    if (fromMessage) {
+      const named = fieldsFromUniqueIndexName(fromMessage, meta?.modelName);
+      if (named) return named;
+    }
   }
   return undefined;
 }

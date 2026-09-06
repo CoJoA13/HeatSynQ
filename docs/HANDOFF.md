@@ -60,6 +60,41 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-06 (third) — PRISMA 7.9.1 → 7.10.0, AND THE P2002 SHAPE THAT MOVED UNDER IT (#298).**
+The bump itself is routine; what it cost was the two things the gates found. **`allowScripts` is
+version-pinned**, so the bump left `prisma@7.9.1` and `@prisma/engines@7.9.1` naming versions that
+were no longer installed and npm skipped BOTH install scripts behind a single `npm warn
+install-scripts` block — exactly the trap this file documents. `npm install-scripts approve` fixed
+it and rewrote the pins itself; do not hand-edit that field.
+
+**The adapter's P2002 meta shape changed, and nothing threw.** 7.9.1 reported
+`cause.constraint.fields: ["name"]`; 7.10.0 reports `cause.constraint.index: "Role_name_key"` and no
+`fields` key at all. `uniqueConflictFields` found nothing, and every unique-violation message in the
+app degraded from "A role with that NAME already exists" to "…with that VALUE…". Two tests caught
+it; nothing else would have. The extractor now reads four shapes in order and keeps the dead
+branches, since the adapter has moved under this repo once — the index name is parsed the way
+`fkConstraintName` already parses `Model_field_fkey`, refusing anything off-convention rather than
+guessing, with a test asserting all 71 unique index names in the migrations still parse.
+`isDuplicateClientRequestId` came through unharmed, proven by eight real idempotency tests, because
+it already consulted the driver's message as a last resort — which is the argument for keeping all
+four branches.
+
+**The advisories did NOT clear, contrary to the reason this PR was prioritised.** 7.10.0 still pins
+`deepmerge-ts@7.1.5` (needs ≥8) and `mysql2@3.15.3` (needs >3.23.0), both transitive under
+`prisma` and both in the production tree. `mysql2` is Prisma's MySQL driver and this app is
+Postgres-only, so the code path is never exercised, but it ships. Nothing actionable here without
+an `overrides` entry or an upstream fix; recorded so the next bump is not prioritised on the same
+wrong premise.
+
+**A pre-existing flake was identified and filed, NOT introduced here (#305).** The 100-load traveler
+print renders inside one interactive transaction on Prisma's 5000 ms default and does not reliably
+finish: measured 5343/5745/5823 ms on 7.10.0 and — the discriminator — **1 of 3 runs failing at 6379
+ms on 7.9.1**, same machine, same session. It is a production budget, not just a test: enough loads
+and an all-loads print 500s instead of printing. It also explains the single unidentified failure in
+the #276 run earlier this session.
+
+Gates: **3913 tests / 224 files** (+5), `tsc`/`eslint`/`build` clean, E2E **25/25 PASS**.
+
 **2026-09-06 (second) — THE LAST-MANAGER GUARD NOW JUDGES THE POST-WRITE STATE (#250, PR #304).**
 `updateUser`'s guard refused deactivating or re-roling the sole active `manage_users` holder, but it
 lived in `updateUser`, ran only when `active` or `roleId` was in the input, and read the target's

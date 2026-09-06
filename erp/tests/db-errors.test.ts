@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Prisma } from "../prisma/generated/prisma/client";
 import { prisma, truncateAll } from "./helpers/db";
 import { withDbErrors, translatePrisma, retryOnSerializationConflict } from "@/server/db-errors";
@@ -163,6 +166,86 @@ describe("P2002/P2003 field extraction on the driver-adapter stack (#40)", () =>
     });
     expect(() => translatePrisma(legacyP2003, { entity: "Payment type" }))
       .toThrow(expect.objectContaining({ status: 400, message: "That gl account does not exist" }));
+  });
+
+  // Prisma 7.10.0's pg adapter replaced `constraint: { fields: ["name"] }` with
+  // `constraint: { index: "Role_name_key" }`, which silently degraded EVERY unique-violation
+  // message in the app from "with that name" to "with that value". The two real-error tests above
+  // caught it on the bump; these pin the parse itself, so the branch cannot rot back out on a
+  // stack where the adapter happens to send the older shape.
+  it("reads the field out of the 7.10.0 index name (synthetic)", () => {
+    const indexShape = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test",
+      meta: {
+        modelName: "Role",
+        driverAdapterError: { cause: { constraint: { index: "Role_name_key" } } },
+      },
+    });
+    expect(() => translatePrisma(indexShape, { entity: "Role" }))
+      .toThrow(expect.objectContaining({ message: "A role with that name already exists" }));
+  });
+
+  it("reads every column of a COMPOSITE unique out of the index name (synthetic)", () => {
+    // `ClosePeriod_year_month_key` and its kind are real on this schema, and the caller joins the
+    // list — so a composite must not collapse to one column or to "value".
+    const composite = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test",
+      meta: {
+        modelName: "ClosePeriod",
+        driverAdapterError: { cause: { constraint: { index: "ClosePeriod_year_month_key" } } },
+      },
+    });
+    expect(() => translatePrisma(composite, { entity: "Close period" }))
+      .toThrow(expect.objectContaining({ message: "A close period with that year, month already exists" }));
+  });
+
+  it("falls back to the driver's message when even the index is missing (synthetic)", () => {
+    // The last resort, and the one that carried `isDuplicateClientRequestId` unharmed through the
+    // 7.10.0 change while `constraint.fields` disappeared underneath it.
+    const messageOnly = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test",
+      meta: {
+        modelName: "Session",
+        driverAdapterError: {
+          cause: {
+            originalCode: "23505",
+            originalMessage: 'duplicate key value violates unique constraint "Session_tokenHash_key"',
+          },
+        },
+      },
+    });
+    expect(() => translatePrisma(messageOnly, { entity: "Session" }))
+      .toThrow(expect.objectContaining({ message: "A session with that tokenHash already exists" }));
+  });
+
+  it("refuses to guess at an index name that does not follow the convention (synthetic)", () => {
+    // A hand-named index, or one whose model does not prefix it, must fall through to "value"
+    // rather than yield a nonsense column — the parse guesses at nothing.
+    for (const index of ["some_hand_named_thing", "Role_name_idx", "Different_name_key"]) {
+      const odd = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002", clientVersion: "test",
+        meta: { modelName: "Role", driverAdapterError: { cause: { constraint: { index } } } },
+      });
+      expect(() => translatePrisma(odd, { entity: "Role" }), index)
+        .toThrow(expect.objectContaining({ message: "A role with that value already exists" }));
+    }
+  });
+
+  it("...and the convention actually holds on this schema", () => {
+    // The parse splits on `_`, so a column containing an underscore would silently yield two
+    // columns. `uniqueConflictFields`'s docstring claims that cannot happen here; this is the
+    // claim, checked against the real migrations rather than believed.
+    const dir = fileURLToPath(new URL("../prisma/migrations", import.meta.url));
+    const names = readdirSync(dir, { recursive: true, encoding: "utf8" })
+      .filter((f) => f.endsWith("migration.sql"))
+      .flatMap((f) => [...readFileSync(join(dir, f), "utf8")
+        .matchAll(/CREATE UNIQUE INDEX(?: IF NOT EXISTS)? "([^"]+)"/g)].map((m) => m[1]));
+    expect(names.length, "found no unique indexes — the glob is wrong, not the schema")
+      .toBeGreaterThan(40);
+    const unconventional = [...new Set(names)]
+      .filter((n) => !/^[A-Za-z]+(?:_[a-zA-Z][a-zA-Z0-9]*)+_key$/.test(n))
+      .sort();
+    expect(unconventional, "a unique index whose name the P2002 parse cannot read").toEqual([]);
   });
 
   // The adapter omits `constraint` entirely when Postgres sends no DETAIL line — the extractor
