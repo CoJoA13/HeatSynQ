@@ -455,9 +455,11 @@ export function QuoteDetail({ id }: { id: string }) {
   }
 
   // ---- Print (Task 10; the InvoiceDetail.tsx `printInvoice` precedent — POST, stream the blob
-  // into a new tab, bump the documents list so the just-archived print appears). Legal while the
-  // form is dirty: the print renders the SAVED quote, and the archived paper is the record of
-  // what the server holds — nothing here adopts or discards the draft. ----
+  // into a new tab, bump the documents list so the just-archived print appears). REFUSED while the
+  // form is dirty, by `printGate` above: the print renders the SAVED quote and files it
+  // permanently, so printing over unsaved edits archives paper that disagrees with the screen.
+  // (This comment used to say the opposite — "legal while the form is dirty" — and had been false
+  // since round 7's Codex P1 added that branch to `printGate`. Found by #277's sweep.) ----
 
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
