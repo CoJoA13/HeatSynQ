@@ -60,6 +60,78 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-05 (sixth pass) — THE ARCHIVAL/REPLACE GATE CENSUS IS DERIVED, NOT HAND-WRITTEN (#277,
+PR #295).** CLAUDE.md carried the rule — a control that archives paper or replaces server rows must
+consult the unsaved-edit guard — and admitted in the same paragraph that the list of such controls
+was "a census by hand, not by test", four review rounds having each found another path. That is the
+signature of an incomplete enumeration, and a hand list cannot report the entry nobody remembered.
+`tests/archival-gate-sweep.test.ts` replaces it: 24 tests, no database, ~1.4s.
+
+**The archival half is fully mechanical.** `storeDocument` is *asserted* to be the only writer of a
+`StoredDocument` row rather than believed to be; a parsed call graph over `src/server`, `src/app/api`
+and `src/lib` walks it out to the routes whose mutating handlers reach it, and those join the client
+files through the URL — the only thing that actually connects the two halves, since a client may not
+import a service. It answers the same eight POST routes a hand trace does, through a module-private
+hop (the statements trio), a re-export barrel and a point-free `handle(fn)` alike.
+
+**The replace half is hand-SEEDED and says so.** No signal separates the write that destroys an
+overlay from the write that saves one: `recalculateInvoice` and `replaceInvoiceLines` are the same
+delete-then-create on the same model, and the discriminator — whether the operator's click IS that
+write — is a fact about the UI. So seven hazards are seeded, and a tripwire keeps them from rotting:
+every `src/server` function that destroys rows wholesale must be classified WITH the routes reaching
+it. Widening that universe from "deletes and re-creates" to "destroys" is what earned its keep — the
+delete-and-re-create rule finds only replaces that put something back, and **both live gaps were
+destroyers that put nothing back**.
+
+**Two ungated replaces the hand list had never named.** `removeLine` hard-deletes the `OrderSerial`
+rows `SerialsSection` is editing, behind a `confirm` that names the line and not the serials
+(**#293**). `removeOrderFromShipper` deletes three grids' rows (**#294**). What surfaces both is that
+the census is keyed on the **(client file, route) PAIR** and pinned by equality, so every control
+must carry its own verdict: `ShipmentDetail.tsx` already calls both gate primitives for its print and
+its reverse, and a file-scoped "does this file consult the guard" reports it covered. Both are
+recorded as `NOT GUARDED` exemptions citing their issue — which must cite one, and whose count is
+pinned at two, so a third is a decision. Changing a control the shop uses is a behaviour decision,
+not something a test PR should make under cover.
+
+**A gate verdict is proved in two halves, and the second half was missing until review.** The named
+binding must still be TAINTED by `useUnsavedPresent()` — `InvoiceDetail` computes ONE answer and
+feeds three gates, so deleting recalculate's unsaved branch is invisible to any file-scoped rule —
+and it must still appear in a REFUSAL, a `disabled=` attribute or an `if`. Without the second half a
+reviewer disconnected the cert print from its gate (`disabled={printGate.disabled || printing ||
+unsavedReadings}` → `disabled={printGate.disabled || printing}`), leaving the binding computed, still
+named in a tooltip, and gating nothing — 24/24 green. A `uses >= 2` floor is satisfied by a tooltip;
+a refusal site is not.
+
+**Mutations.** Every assertion here was proved by breaking the thing it names: the five gate
+disconnects above, each gate's unsaved branch deleted individually, a gate verdict downgraded to a
+plausible exemption, a `NOT GUARDED` reason losing its issue reference, a `/g` flag returning to the
+`storedDocument` pattern, the point-free argument edge deleted, a tagged-template raw destroyer
+added, a `StoredDocument` created through a relation, a second writer, a new unclassified destroyer,
+a third caller of `applyLoads`, a control moved behind a one-argument helper, and a re-export barrel
+hiding a print service. **A lesson worth carrying: a batch mutation harness reported two FALSE reds**
+— re-checked one at a time, a downgraded verdict and a deleted check were both green, and the first
+of those was a real hole that then needed closing. Re-run a surprising red in isolation before
+believing it.
+
+**Three residuals are stated at the code rather than implied away**, none closable by parsing: a
+destroyer that issues NO request (the apply-panel collapse, the new-shipment customer switch) is
+invisible because the subject is a request; a `confirmDiscard` is provable only at file scope,
+because the call sits in a JSX handler while the request is issued beside it; and a replace expressed
+as a flag flip rather than a delete (`reverseShipper` clears `lineComplete`) produces no candidate
+and is seeded by hand. The design was attacked by four adversarial reviewers before it was written,
+which is where the per-control taint, the URL constant-folding, the point-free edge, the seed
+assertion and the pinned route-to-file census all came from; the first draft failed open on every
+one of them.
+
+Also: the two parser leaves the source sweeps share moved to `tests/helpers/ts-parse.ts`
+(`callsBareIdentifier`, `resolveLocalModule`), with `audit-children.test.ts`'s 21 #188 regression
+assertions now protecting the shared implementation through a one-line wrapper. And `QuoteDetail`'s
+print comment, which had said the print was "legal while the form is dirty" since round 7 added the
+branch that refuses it, now says what the code does.
+
+Gates: **3880 tests / 223 files** (+24, all the new sweep), `tsc`/`eslint` clean, E2E **25/25 PASS**.
+The sweep itself is ~1.4s and touches no database, so it runs in the same breath as `tsc`.
+
 **2026-09-05 (fifth pass) — THE STEP OVERLAY IS ALWAYS KEYED LIKE THE ROWS ON SCREEN (#288, merged
 `b63ed35`, PR #291, squash).** A cut's old-to-new mapping arrives a full round trip before the
 reload that renumbers the rows: `refreshAfter` only sets `selected`, and the detail is fetched by an
