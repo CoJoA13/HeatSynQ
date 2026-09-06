@@ -60,17 +60,18 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-05 (fifth pass) — THE STEP OVERLAY IS ALWAYS KEYED LIKE THE ROWS ON SCREEN (#288).**
-A cut's old-to-new mapping arrives a full round trip before the reload that renumbers the rows:
-`refreshAfter` only sets `selected`, and the detail is fetched by an effect, so on the cut path it
-returns before anything re-renders. Every mutator applied that mapping to the overlay on arrival,
-which left the two halves of the editor disagreeing about what each step is called for the whole
-window. Three consequences, all verified: every unsaved draft went INVISIBLE (a row's lookup is by
-its rendered id and missed), a keystroke landed under a pre-cut id nothing would ever reach again —
-stranding the section exactly as #283 did, and silently losing the character too — and the section
-reported unsaved changes on a page the operator had not touched, because a remapped key is absent
-from `originals` until the reload lands. Filed while fixing #283; the last two symptoms were found
-only when this was investigated properly, so the issue understated it.
+**2026-09-05 (fifth pass) — THE STEP OVERLAY IS ALWAYS KEYED LIKE THE ROWS ON SCREEN (#288, merged
+`b63ed35`, PR #291, squash).** A cut's old-to-new mapping arrives a full round trip before the
+reload that renumbers the rows: `refreshAfter` only sets `selected`, and the detail is fetched by an
+effect, so on the cut path it returns before anything re-renders. Every mutator applied that mapping
+to the overlay on arrival, which left the two halves of the editor disagreeing about what each step
+is called for the whole window. Three consequences, all verified: every unsaved draft went INVISIBLE
+(a row's lookup is by its rendered id and missed), a keystroke landed under a pre-cut id nothing
+would ever reach again — stranding the section exactly as #283 did, and silently losing the
+character too — and the section reported unsaved changes on a page the operator had not touched,
+because a remapped key is absent from `originals` until the reload lands. Filed while fixing #283;
+the last two symptoms were found only when this was investigated properly, so the issue understated
+it.
 
 **The mapping is STAGED and applied at the landing.** `stagePendingRekey` records it against the
 revision it produced; `applyPendingRekey` applies it in the same `setEdits`/`setDetail` commit
