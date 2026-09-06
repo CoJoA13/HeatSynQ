@@ -61,11 +61,12 @@ merged is a pointer. Do not append a new phase narrative here — this file is t
 every fresh session and has to stay readable in one pass.
 
 **2026-09-05 (sixth pass) — THE ARCHIVAL/REPLACE GATE CENSUS IS DERIVED, NOT HAND-WRITTEN (#277,
-PR #295).** CLAUDE.md carried the rule — a control that archives paper or replaces server rows must
-consult the unsaved-edit guard — and admitted in the same paragraph that the list of such controls
-was "a census by hand, not by test", four review rounds having each found another path. That is the
-signature of an incomplete enumeration, and a hand list cannot report the entry nobody remembered.
-`tests/archival-gate-sweep.test.ts` replaces it: 24 tests, no database, ~1.4s.
+merged `723c1b4`, PR #295, squash).** CLAUDE.md carried the rule — a control that archives paper or
+replaces server rows must consult the unsaved-edit guard — and admitted in the same paragraph that
+the list of such controls was "a census by hand, not by test", four review rounds having each found
+another path. That is the signature of an incomplete enumeration, and a hand list cannot report the
+entry nobody remembered. `tests/archival-gate-sweep.test.ts` replaces it: 24 tests, no database,
+~1.4s.
 
 **The archival half is fully mechanical.** `storeDocument` is *asserted* to be the only writer of a
 `StoredDocument` row rather than believed to be; a parsed call graph over `src/server`, `src/app/api`
