@@ -64,8 +64,8 @@ every fresh session and has to stay readable in one pass.
 merged `884ad15`, squash).** The bump itself is routine; what it cost was the two things the gates
 found. **`allowScripts` is version-pinned**, so the bump left `prisma@7.9.1` and
 `@prisma/engines@7.9.1` naming versions that were no longer installed and npm skipped BOTH install
-scripts behind a single `npm warn install-scripts` block — exactly the trap this file documents. `npm install-scripts approve` fixed
-it and rewrote the pins itself; do not hand-edit that field.
+scripts behind a single `npm warn install-scripts` block — exactly the trap this file documents.
+`npm install-scripts approve` fixed it and rewrote the pins itself; do not hand-edit that field.
 
 **The adapter's P2002 meta shape changed, and nothing threw.** 7.9.1 reported
 `cause.constraint.fields: ["name"]`; 7.10.0 reports `cause.constraint.index: "Role_name_key"` and no
