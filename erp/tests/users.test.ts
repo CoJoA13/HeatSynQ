@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll, prisma } from "./helpers/db";
-import { createUser, listUsers, updateUser, setUserOverrides } from "@/server/users";
+import {
+  createUser, listUsers, updateUser, setUserOverrides, updateUserWithOverrides,
+} from "@/server/users";
 import { createRole, setRolePermissions } from "@/server/roles";
 import { verifyPassword } from "@/server/password";
 import { HttpError } from "@/server/http";
@@ -143,6 +145,71 @@ describe("users service", () => {
         username: "mgr3", displayName: "Manager3", password: "pw123456", roleId: role.id,
       });
       await expect(updateUser(id, { roleId: null })).rejects.toThrow("Cannot remove the last user manager");
+    });
+
+    it("rejects DENYing action.manage_users on the last manager, via the overrides path (#250)", async () => {
+      // The guard's blind spot for four phases: it ran only when `active` or `roleId` was in the
+      // input, and read the target's overrides as they stood BEFORE the write. So a request that
+      // only replaces overrides never reached it at all, and a DENY committed — locking everyone
+      // out of user management, the exact outcome the guard exists to prevent, one write path over.
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr4", displayName: "Manager4", password: "pw123456", roleId: role.id,
+      });
+      await expect(setUserOverrides(id, [{ permission: "action.manage_users", mode: "DENY" }]))
+        .rejects.toThrow("Cannot remove the last user manager");
+      // And nothing was written: the refusal is pre-transaction, so the override set is untouched.
+      expect((await listUsers()).find((u) => u.id === id)?.overrides).toEqual([]);
+    });
+
+    it("rejects a DENY arriving in the SAME request as the field update (#250)", async () => {
+      // The second half. Here the guard DID run — `active` is present — but it evaluated the
+      // target's pre-write overrides, so a DENY riding in the same body was invisible to it and
+      // the combined write committed. Post-write state is what has to be judged.
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr5", displayName: "Manager5", password: "pw123456", roleId: role.id,
+      });
+      await expect(updateUserWithOverrides(
+        id, { displayName: "Still Manager" }, [{ permission: "action.manage_users", mode: "DENY" }],
+      )).rejects.toThrow("Cannot remove the last user manager");
+      const after = (await listUsers()).find((u) => u.id === id);
+      expect(after?.overrides, "the overrides never landed").toEqual([]);
+      expect(after?.displayName, "and neither did the field beside them").toBe("Manager5");
+    });
+
+    it("lets an override GRANT keep the last manager, when the role alone would not (#250)", async () => {
+      // The guard must judge the POST-WRITE set, not merely refuse anything touching overrides.
+      // Here the role is being removed AND a GRANT override arrives in the same request: the user
+      // still manages users afterwards, so this must be ALLOWED. Without this case the fix could
+      // be "refuse every override write on the last manager", which passes the two tests above
+      // while making the sole manager's overrides permanently uneditable.
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr6", displayName: "Manager6", password: "pw123456", roleId: role.id,
+      });
+      await updateUserWithOverrides(
+        id, { roleId: null }, [{ permission: "action.manage_users", mode: "GRANT" }],
+      );
+      const after = (await listUsers()).find((u) => u.id === id);
+      expect(after?.roleId).toBeNull();
+      expect(after?.overrides).toEqual([{ permission: "action.manage_users", mode: "GRANT" }]);
+    });
+
+    it("still allows an unrelated override write on the last manager (#250)", async () => {
+      // The guard must not become "the sole manager's overrides are frozen": an override set that
+      // leaves manage_users intact is an ordinary admin action.
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr7", displayName: "Manager7", password: "pw123456", roleId: role.id,
+      });
+      await setUserOverrides(id, [{ permission: "orders.view", mode: "DENY" }]);
+      expect((await listUsers()).find((u) => u.id === id)?.overrides)
+        .toEqual([{ permission: "orders.view", mode: "DENY" }]);
     });
 
     it("allows deactivating a manager when another active manager remains", async () => {

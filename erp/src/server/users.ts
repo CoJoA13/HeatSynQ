@@ -115,24 +115,9 @@ export async function updateUser(
     throw new HttpError(400, "You cannot deactivate your own account");
   }
 
-  // Guard against locking everyone out of user management: only relevant when active or roleId
-  // is changing, and only when the target is *currently* the sole active manage_users holder.
-  if (input.active === false || input.roleId !== undefined) {
-    const holders = await activeManageUsersHolders();
-    const target = holders.find((h) => h.id === id);
-    if (target && holders.length === 1) {
-      const stillActive = input.active !== undefined ? input.active : target.active;
-      const role =
-        input.roleId !== undefined && input.roleId !== target.roleId
-          ? input.roleId
-            ? await prisma.role.findUnique({ where: { id: input.roleId }, include: { permissions: true } })
-            : null
-          : target.role;
-      const stillManages = stillActive && canDo({ role, overrides: target.overrides }, "manage_users");
-      if (!stillManages) throw new HttpError(400, "Cannot remove the last user manager");
-    }
-  }
-
+  // The last-manager guard used to live here; since #250 it is the first act of `writeUser`, so
+  // the overrides-only paths cannot skip it. This function keeps only the check that is genuinely
+  // about the CALLER rather than the target.
   await writeUser(id, input, overrides);
 }
 
@@ -161,20 +146,76 @@ export async function updateUserWithOverrides(
   }
 }
 
+/**
+ * Refuse a write that would leave nobody able to manage users.
+ *
+ * **JUDGED ON THE POST-WRITE STATE, and that is the whole of #250.** The old guard lived in
+ * `updateUser`, ran only when `active` or `roleId` was in the input, and read the target's
+ * overrides as they stood BEFORE the write. Both halves were holes:
+ *
+ *  - a request that only replaced overrides never reached it — `setUserOverrides` and the
+ *    overrides-only branch of `updateUserWithOverrides` go straight to the writer — so a DENY on
+ *    `action.manage_users` committed and locked everyone out, the exact outcome it exists to
+ *    prevent, one write path over;
+ *  - and when it DID run, a DENY riding in the same body was invisible to it, because it asked
+ *    `canDo` about the overrides being replaced rather than the ones arriving.
+ *
+ * It was also wrong in the OTHER direction, which is why this cannot simply refuse any override
+ * write on the sole manager: dropping the role while granting `action.manage_users` by override
+ * leaves that user still managing users, and the old code refused it (pinned in users.test.ts).
+ *
+ * It lives HERE, as the first act of the one shared writer, for the reason `assertKnownPermissions`
+ * does: every path to the write then validates by construction rather than by caller discipline.
+ * Pre-transaction, so a refusal leaves nothing behind.
+ *
+ * The `activeManageUsersHolders` query is gated on a write that could REMOVE the permission —
+ * deactivation, a role change, or any override replacement. A rename or a password reset skips it,
+ * which is what keeps that findMany off the routine admin actions (see its own docstring).
+ */
+async function assertLastManagerSurvives(
+  id: string,
+  input: Parameters<typeof updateUser>[1] | undefined,
+  overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
+) {
+  const nextActive = input?.active;
+  const nextRoleId = input?.roleId;
+  if (nextActive !== false && nextRoleId === undefined && overrides === undefined) return;
+
+  const holders = await activeManageUsersHolders();
+  const target = holders.find((h) => h.id === id);
+  // Only the SOLE holder is protected: with a second manager active, removing this one locks
+  // nobody out. A target that does not hold the permission cannot be the one keeping the door open.
+  if (!target || holders.length !== 1) return;
+
+  const stillActive = nextActive !== undefined ? nextActive : target.active;
+  const role =
+    nextRoleId !== undefined && nextRoleId !== target.roleId
+      ? nextRoleId
+        ? await prisma.role.findUnique({ where: { id: nextRoleId }, include: { permissions: true } })
+        : null
+      : target.role;
+  // `overrides` REPLACES the set wholesale (`writeUser` deletes then re-creates), so the post-write
+  // set is the incoming array when one is present — never a merge with what is there.
+  const nextOverrides = overrides ?? target.overrides;
+  const stillManages = stillActive && canDo({ role, overrides: nextOverrides }, "manage_users");
+  if (!stillManages) throw new HttpError(400, "Cannot remove the last user manager");
+}
+
 function assertKnownPermissions(overrides: { permission: string }[]) {
   const unknown = overrides.filter((o) => !ALL_PERMISSIONS.includes(o.permission));
   if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.map((o) => o.permission).join(", ")}`);
 }
 
-/** ONE transaction, ONE auditedUpdate, applying whichever parts are present (#237). The
- *  unknown-permission refusal lives HERE — first act, still pre-transaction — so every path to
- *  the write validates by construction rather than by caller discipline (review Minor 1). */
+/** ONE transaction, ONE auditedUpdate, applying whichever parts are present (#237). BOTH refusals
+ *  live HERE — first acts, still pre-transaction — so every path to the write validates by
+ *  construction rather than by caller discipline (review Minor 1, and #250 for the second). */
 async function writeUser(
   id: string,
   input: Parameters<typeof updateUser>[1] | undefined,
   overrides: { permission: string; mode: "GRANT" | "DENY" }[] | undefined,
 ) {
   if (overrides) assertKnownPermissions(overrides);
+  await assertLastManagerSurvives(id, input, overrides);
   await withDbErrors({ entity: "User" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("user", id, async () => {
