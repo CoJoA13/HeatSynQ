@@ -60,6 +60,37 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-06 (second) — THE LAST-MANAGER GUARD NOW JUDGES THE POST-WRITE STATE (#250, PR PR_NUM).**
+`updateUser`'s guard refused deactivating or re-roling the sole active `manage_users` holder, but it
+lived in `updateUser`, ran only when `active` or `roleId` was in the input, and read the target's
+overrides as they stood BEFORE the write. Two holes, and the fix closes both by MOVING the guard to
+the first act of `writeUser` — the one shared writer since #237 — so every path validates by
+construction rather than by caller discipline, the same argument `assertKnownPermissions` already
+made two lines above it.
+
+**The hole #250 named:** a write that only replaces overrides never reached the guard at all.
+`setUserOverrides`, and `updateUserWithOverrides`'s overrides-only branch, go straight to the
+writer, so a DENY on `action.manage_users` committed and locked everyone out of user management.
+**The hole it did not name:** when the guard DID run, a DENY riding in the same body was invisible,
+because it asked `canDo` about the overrides being replaced rather than the ones arriving.
+
+**And it was wrong in the OTHER direction too, which the tests found.** Dropping the sole manager's
+role while GRANTING `action.manage_users` by override leaves that user still managing users — and
+the old guard refused it. So the fix could not be "refuse any override write on the last manager":
+that passes both failure cases while making the sole manager's overrides permanently uneditable.
+The regression test for it was written before the fix and is the one that rules the lazy version
+out.
+
+Reachability is unchanged and low, as filed: the admin UI never sends overrides (API-only today), so
+this needs a direct API caller already holding `manage_users`. The `activeManageUsersHolders` query
+stays gated on a write that could REMOVE the permission — deactivation, a role change, or any
+override replacement — so a rename or a password reset still skips that findMany.
+
+**6 mutations verified red**, including the two that matter most: reverting the gate to ignore
+overrides, and reverting the judgement to the pre-write set.
+
+Gates: **3908 tests / 224 files** (+4), `tsc`/`eslint` clean, E2E **25/25 PASS**.
+
 **2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, merged
 `2c4efda`, PR #301, squash).** #276 was filed as a `/shipping/new` bug: leaving while the create POST
 is in flight still creates the shipment, though the prompt the operator accepted said "discard". It
