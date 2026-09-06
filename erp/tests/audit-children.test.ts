@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import ts from "typescript";
+import { callsBareIdentifier, isLocalSpecifier, resolveLocalModule } from "./helpers/ts-parse";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -301,29 +302,16 @@ export function valueModuleSpecifiers(src: string, fileName = "candidate.tsx"): 
   return out;
 }
 
-/** A specifier this resolver is willing to be asked about: the `@/` alias, or a relative path. */
-const isLocalSpecifier = (spec: string) => spec.startsWith("@/") || spec.startsWith(".");
-
 /**
  * The real file a LOCAL module specifier names, repo-relative, or `null` if nothing is there.
  *
- * `@/` is the repo's alias for `src/` (`tsconfig.json` `paths` — that it is still the ONLY alias
- * is asserted below, which is what makes `isLocalSpecifier` exhaustive). Extensions are tried in
- * the bundler's order, then the specifier as written, so an extension-carrying `"./X.tsx"` and a
- * non-code asset both land somewhere real rather than reading as unresolvable.
+ * The resolver itself is `tests/helpers/ts-parse.ts`, shared with the archival-gate sweep (#277);
+ * its docstring enumerates the shapes it drops silently, and guard (a) below is where THIS sweep
+ * asserts the two that would matter here are empty. Only the root is bound: `process.cwd()` is
+ * `erp/` under vitest, which is what makes both `SRC_ROOT` and the answers repo-relative.
  */
 function resolveLocal(fromFile: string, spec: string): string | null {
-  let base: string;
-  if (spec.startsWith("@/")) base = join(SRC_ROOT, spec.slice(2));
-  else if (spec.startsWith(".")) base = resolve(process.cwd(), dirname(fromFile), spec);
-  else return null;
-  for (const candidate of [
-    `${base}.tsx`, `${base}.ts`, join(base, "index.tsx"), join(base, "index.ts"), base,
-  ]) {
-    if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
-    return relative(process.cwd(), candidate).split(sep).join("/");
-  }
-  return null;
+  return resolveLocalModule(process.cwd(), fromFile, spec);
 }
 
 /**
@@ -455,59 +443,15 @@ const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]|\.method\s*
 /**
  * Does this file REALLY call `invalidateHistory()` — as CODE, not as text that spells one?
  *
- * **PARSED, NOT PATTERN-MATCHED (#188).** Every earlier attempt stripped comments by hand and
- * tested the remainder, and every earlier attempt was wrong in a way only running it revealed:
- *
- *  - stripping block comments first let a `/*` inside a `//` comment open a block that ran to the
- *    next real `*\/` — on one real file that swallowed 23,140 characters and reported five genuine
- *    calls as missing;
- *  - stripping only `//` let a docblock *mentioning* the call read as the call itself;
- *  - and the shipped version, which stripped `//` then `/* … *\/`, still counted any text the strip
- *    did not touch: `const hint = "invalidateHistory()"` read as wired, so a file could lose its
- *    real call and keep the census green while its mounted panel went stale. It also ate a genuine
- *    call sitting after a `//` or a `/*` INSIDE a string literal — failing in both directions at
- *    once.
- *
- * A fifth regex would be the same class of change. `ts.createSourceFile` answers the question
- * exactly: comments, strings, template text, JSX text and regex literals are all handled by the
- * parser rather than by hand, and every shape nobody has thought of yet comes for free.
- *
- * WHAT COUNTS: a `CallExpression` whose callee is the bare IDENTIFIER `invalidateHistory`, anywhere
- * in the tree. Deliberately NOT a property access (`x.invalidateHistory()`) and not an uncalled
- * reference — see the self-test below for the reasoning; both exclusions fail CLOSED, which is the
- * direction the rest of this sweep is built in.
- *
- * The source is parsed as TSX because every file this is asked about is a `.tsx` client component.
- * `createSourceFile` recovers from syntax errors rather than throwing, and error recovery is good
- * enough that a real call usually SURVIVES a syntax error elsewhere in the file — so "unparseable
- * therefore reported unwired" is not a claim this makes, and the reviewer could not construct a
- * fail-open from a broken file either.
- *
- * **The backstop for an unparseable file is not this function; it is the rest of the gate set.** A
- * `.tsx` under `src/` that does not parse reds `npx tsc --noEmit` and `npx eslint src tests`,
- * loudly and by name, and both run beside this suite on every change. Nothing here needs to
- * re-detect a syntax error, and reaching for `parsed.parseDiagnostics` (an internal API) to do so
- * would duplicate a check that already fails harder.
+ * The detector is `callsBareIdentifier` in `tests/helpers/ts-parse.ts`, shared with the
+ * archival-gate sweep (#277); its docstring carries the #188 record of the three hand-rolled
+ * comment strippers that were each wrong in a different direction, and of why a property access
+ * (`x.invalidateHistory()`) and an uncalled reference deliberately do NOT count. This wrapper binds
+ * the name, so the self-tests below — which are this repo's audit of that detector, not merely of
+ * this sweep — go on exercising the shared implementation unchanged.
  */
 export function callsInvalidate(src: string): boolean {
-  const parsed = ts.createSourceFile(
-    "candidate.tsx", src, ts.ScriptTarget.Latest, /* setParentNodes */ false, ts.ScriptKind.TSX,
-  );
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (
-      ts.isCallExpression(node)
-      && ts.isIdentifier(node.expression)
-      && node.expression.text === "invalidateHistory"
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(parsed, visit);
-  return found;
+  return callsBareIdentifier(src, "invalidateHistory");
 }
 
 /**
