@@ -60,7 +60,7 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-06 (second) — THE LAST-MANAGER GUARD NOW JUDGES THE POST-WRITE STATE (#250, PR PR_NUM).**
+**2026-09-06 (second) — THE LAST-MANAGER GUARD NOW JUDGES THE POST-WRITE STATE (#250, PR #304).**
 `updateUser`'s guard refused deactivating or re-roling the sole active `manage_users` holder, but it
 lived in `updateUser`, ran only when `active` or `roleId` was in the input, and read the target's
 overrides as they stood BEFORE the write. Two holes, and the fix closes both by MOVING the guard to
