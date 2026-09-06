@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, ApiError } from "@/lib/fetcher";
+import { ApiError, api, trackedFetch } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
@@ -469,7 +469,7 @@ export function QuoteDetail({ id }: { id: string }) {
     setPrinting(true);
     setPrintError(null);
     try {
-      const res = await fetch(`/api/quotes/${id}/print`, { method: "POST" });
+      const res = await trackedFetch(`/api/quotes/${id}/print`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);

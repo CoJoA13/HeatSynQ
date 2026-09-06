@@ -8,7 +8,7 @@
 // Client component: it reaches the guarded APIs, so it never imports src/server/** — the
 // docType→record mapping (`previewRecordSpec`) is pure/client-safe (the TemplateEditor precedent).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/fetcher";
+import { api, trackedFetch } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { previewRecordSpec, type PreviewRecordKind } from "@/lib/template-editor";
@@ -100,7 +100,7 @@ export function PreviewPane({
         if (asOf) body.asOf = asOf;
         body.combineFamily = combineFamily;
       }
-      const res = await fetch(`/api/templates/${templateId}/preview`, {
+      const res = await trackedFetch(`/api/templates/${templateId}/preview`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
       if (!res.ok) {

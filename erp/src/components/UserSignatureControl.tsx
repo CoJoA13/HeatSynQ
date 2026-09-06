@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
-import { ApiError } from "@/lib/fetcher";
+import { ApiError, trackedFetch } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 
 /**
@@ -149,7 +149,7 @@ export function UserSignatureControl(
     try {
       const form = new FormData();
       form.set("file", file, file.name);
-      const res = await fetch(path, { method: "PUT", body: form });
+      const res = await trackedFetch(path, { method: "PUT", body: form });
       if (!res.ok) await readError(res, `Upload failed (${res.status})`);
       setError(null);
       // Report the mutation up: the page advances `signatureRev` optimistically (so `src` moves at
@@ -170,7 +170,7 @@ export function UserSignatureControl(
     if (!confirm("Clear this signature?")) return;
     setBusy(true);
     try {
-      const res = await fetch(path, { method: "DELETE" });
+      const res = await trackedFetch(path, { method: "DELETE" });
       if (!res.ok) await readError(res, `Clear failed (${res.status})`);
       setError(null);
       onSignatureChange(false);

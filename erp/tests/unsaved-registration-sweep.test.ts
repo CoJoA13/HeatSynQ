@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 // THE CENSUS BEHIND THE CLAIM. #272 said registration was a "structural guarantee" because
 // `useUnsavedSection` is called from inside the shared `SaveButton` — but that only ever bound the
@@ -91,6 +92,66 @@ function registers(source: string): boolean {
   return /\buseUnsavedSection\s*\(/.test(body) || /<SaveButton\b/.test(body);
 }
 
+/**
+ * The lines in this source where a BARE `fetch` issues a write (#276).
+ *
+ * A write is a `method` this reader cannot rule out: one of the four mutating literals, or any shape
+ * it cannot read — a spread, a shorthand, a COMPUTED key, a variable, a ternary, or an init that is
+ * not an object literal at all. All of those fail CLOSED, since a method it cannot see is one that
+ * might be a write. A missing second argument is the GET that `fetch` defaults to — UNLESS the first
+ * argument is not a plain URL, because `fetch(new Request(url, { method: "POST" }))` carries its
+ * method there instead.
+ *
+ * The global is recognised bare AND through `window`/`globalThis`/`self`, which are the same
+ * function; only those receivers count, so `res.fetch(...)` stays some other function that shares
+ * the name. Every one of these arms was a fail-OPEN in the first version, found by a reviewer
+ * probing shapes rather than by the sweep going red — none occurs in `src/` today, so they are
+ * closed shapes rather than fixed misses, and the self-test below is what keeps them closed.
+ */
+function bareFetchWrites(source: string, fileName: string): number[] {
+  const sf = ts.createSourceFile(
+    fileName, source, ts.ScriptTarget.Latest, /* setParentNodes */ true,
+    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  const GLOBALS = new Set(["window", "globalThis", "self"]);
+  const isWrite = (url: ts.Expression | undefined, init: ts.Expression | undefined): boolean => {
+    if (init === undefined) {
+      // `fetch(url)` is the GET default — but only when the first argument really is a URL. A
+      // `Request` object carries its own method, and `fetch(req)` cannot be read at all.
+      return !(url !== undefined
+        && (ts.isStringLiteral(url) || ts.isNoSubstitutionTemplateLiteral(url) || ts.isTemplateExpression(url)));
+    }
+    if (!ts.isObjectLiteralExpression(init)) return true;      // an init variable: unreadable
+    for (const prop of init.properties) {
+      if (ts.isSpreadAssignment(prop)) return true;            // `{ ...init }` may carry any method
+      if (!prop.name) return true;                             // a shape with no readable key
+      if (ts.isComputedPropertyName(prop.name)) return true;   // `{ ["method"]: verb }`
+      const name = ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
+      if (name !== "method") continue;
+      if (ts.isPropertyAssignment(prop) && ts.isStringLiteralLike(prop.initializer)) {
+        return MUTATING.has(prop.initializer.text.toUpperCase());
+      }
+      return true;                                             // shorthand, or an expression
+    }
+    return false;                                              // an init that names no method
+  };
+  /** `fetch`, `window.fetch`, `globalThis.fetch`, `self.fetch` — the same function. */
+  const isGlobalFetch = (callee: ts.Expression): boolean =>
+    (ts.isIdentifier(callee) && callee.text === "fetch")
+    || (ts.isPropertyAccessExpression(callee) && callee.name.text === "fetch"
+      && ts.isIdentifier(callee.expression) && GLOBALS.has(callee.expression.text));
+  const out: number[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && isGlobalFetch(n.expression) && isWrite(n.arguments[0], n.arguments[1])) {
+      out.push(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1);
+    }
+    ts.forEachChild(n, walk);
+  };
+  ts.forEachChild(sf, walk);
+  return out;
+}
+
 /** Every dirty-ish identifier that GATES a Save control — the `nameDirty` in
  *  `disabled={canEdit.disabled || !nameDirty}`. A page can hold more than one draft, each with its
  *  own button, and the file-level check above cannot see the difference. */
@@ -149,6 +210,57 @@ describe("every explicit-save editor registers with the unsaved-edit guard", () 
         .map((flag) => `${rel}: ${flag}`);
     });
     expect(gaps).toEqual([]);
+  });
+
+  it("lets no client write escape the in-flight counter (#276)", () => {
+    // THE OTHER HALF OF THE GUARD KNOWING WHAT IT NEEDS TO KNOW. This file's subject is that every
+    // editor tells the registry it is dirty; this is that every WRITE tells the registry it is in
+    // flight, which is what stopped the navigation prompt offering to discard a save that was
+    // already committing. The count is incremented in exactly one place — `trackedFetch` in
+    // `src/lib/fetcher.ts`, which `api()` is built on — so a bare `fetch` with a mutating method
+    // anywhere else is a write the prompt cannot see, and the sentence goes back to being untrue on
+    // that path alone. That is precisely the shape a hand census cannot hold, which is why it is
+    // here rather than in a comment.
+    //
+    // PARSED, not pattern-matched (#188): `fetch` appears in prose and in strings across this tree,
+    // and the question is whether it is CALLED with a write method — which the parser answers and a
+    // regex does not. Server code is out of scope: a `fetch` under `src/server` or `src/app/api` is
+    // the server calling out, not this browser tab writing.
+    const offenders = files
+      .filter((f) => {
+        const rel = f.slice(SRC.length + 1);
+        return !rel.startsWith("server/") && !rel.startsWith("app/api/") && rel !== "lib/fetcher.ts";
+      })
+      .flatMap((f) => bareFetchWrites(readFileSync(f, "utf8"), f).map((line) => `${f.slice(SRC.length + 1)}:${line}`));
+    expect(offenders, "use trackedFetch (or api) so the unsaved-edit prompt can see the write")
+      .toEqual([]);
+  });
+
+  it("...and that detector reads the call, not the word", () => {
+    // Not vacuous by construction: the check above passes on a clean tree whether the detector works
+    // or is blind, and those two look identical. These are the shapes it must and must not catch.
+    const at = (src: string) => bareFetchWrites(src, "candidate.tsx");
+    expect(at(`await fetch("/api/x", { method: "POST" });`), "a bare write").toHaveLength(1);
+    expect(at(`await fetch(url, { method: verb });`), "an unreadable method fails closed").toHaveLength(1);
+    expect(at(`await fetch("/api/x", { ...init });`), "a spread could carry any method").toHaveLength(1);
+    // The four shapes a reviewer probed through the first version. None occurs in src/ today, which
+    // is exactly why only a self-test can hold them: the census is green either way.
+    expect(at(`await fetch(url, init);`), "an init variable is unreadable").toHaveLength(1);
+    expect(at(`await fetch("/api/x", { ["method"]: verb });`), "a computed key").toHaveLength(1);
+    expect(at(`await fetch(new Request(url, { method: "POST" }));`), "a Request carries its own method")
+      .toHaveLength(1);
+    expect(at(`await window.fetch("/api/x", { method: "POST" });`), "window.fetch IS the global")
+      .toHaveLength(1);
+    expect(at(`await globalThis.fetch("/api/x", { method: "POST" });`)).toHaveLength(1);
+    expect(at(`await self.fetch("/api/x", { method: "POST" });`)).toHaveLength(1);
+    expect(at(`await fetch("/api/x");`), "a read").toEqual([]);
+    expect(at("await fetch(`/api/${id}`);"), "a read with an interpolated URL").toEqual([]);
+    expect(at(`await fetch("/api/x", { headers: {} });`), "a read with headers").toEqual([]);
+    expect(at(`await trackedFetch("/api/x", { method: "POST" });`), "the wrapper itself").toEqual([]);
+    expect(at(`await api("/api/x", { method: "POST" });`), "the helper built on it").toEqual([]);
+    expect(at(`// fetch("/api/x", { method: "POST" })`), "a comment").toEqual([]);
+    expect(at(`const hint = 'fetch("/api/x", { method: "POST" })';`), "a string").toEqual([]);
+    expect(at(`res.fetch("/api/x", { method: "POST" });`), "a property call, not the global").toEqual([]);
   });
 
   it("keeps the allowlist honest — every entry still exists and still looks like an editor", () => {

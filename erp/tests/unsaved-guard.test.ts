@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, subscribeUnsaved,
   shouldGuardNavigation, confirmMessage, unsavedCount, leavesCurrentPage,
   unsavedPresentExcluding, type NavIntent,
 } from "@/lib/unsaved-guard";
+import { confirmDiscard } from "@/lib/use-unsaved-section";
+import { beginWrite } from "@/lib/in-flight-writes";
 
 // The pure half of the unsaved-edit guard. The registry is module-level state (the
 // invalidateBackupBanner listener-Set idiom), so every test clears what it marks.
@@ -248,5 +250,117 @@ describe("confirmMessage", () => {
     expect(confirmMessage(["Charges", "Containers", "Loads"])).toBe(
       "Charges, Containers and Loads have unsaved changes. Leave the page and discard them?",
     );
+  });
+
+  it("stops offering to discard a save that is already committing (#276)", () => {
+    // The window this closes is not rare and is not one page's bug: a section's dirty flag means
+    // "differs from the server as loaded", so it stays set for the whole duration of its OWN save —
+    // `grid.reset()` runs after the response lands. Every save on all fourteen registered editors
+    // was therefore a window in which this prompt offered to discard changes that were being
+    // written regardless, and no answer to it could have been honoured.
+    const saving = confirmMessage(["Loads"], true);
+    expect(saving).toBe(
+      "Loads has unsaved changes, and a request is still running — leaving will not cancel it, "
+      + "and you will not see the result. Anything not yet saved is discarded. Leave the page?",
+    );
+    // It must not keep the promise that could not be kept: the OLD sentence offered to discard the
+    // very changes that were committing. The new one still says something is discarded — that is the
+    // next test's subject, and the two claims are not the same sentence.
+    expect(saving).not.toContain("discard them");
+  });
+
+  it("keeps the DISCARD warning while a request is running, because the count names no section", () => {
+    // THE FINDING THAT NEARLY SHIPPED, and the reason this arm adds a fact rather than replacing
+    // one. The counter is app-wide: it knows a request is open, never which section issued it. On
+    // the order hub — click "Save containers", then a nav link while Charges is still dirty — both
+    // labels appear, one is being written and the other is about to be thrown away. A sentence that
+    // said only "it finishes either way" told the operator that Charges would survive, trading a
+    // false "this will be discarded" (which keeps people on the page) for a false "this will be
+    // saved" (which invites them off it). Strictly worse than the bug being fixed.
+    const mixed = confirmMessage(["Charges", "Containers"], true);
+    expect(mixed, "the open request finishes").toMatch(/will not cancel it/);
+    expect(mixed, "AND unsaved work is still lost").toMatch(/not yet saved is discarded/);
+    expect(mixed).toContain("Charges");
+    expect(mixed).toContain("Containers");
+  });
+
+  it("says \"a request\", not \"a save\", because one counted POST writes nothing", () => {
+    // `/api/templates/[id]/preview` answers a POST and its own route docstring says it writes
+    // nothing. It is still counted — the alternative is a per-route allowlist of "POSTs that are
+    // really reads", which is a hand census — so the noun has to be one that stays true either way.
+    const saving = confirmMessage(["Template"], true);
+    expect(saving).toContain("a request is still running");
+    expect(saving, "calling a preview render a save would be a second small lie")
+      .not.toContain("a save is still running");
+  });
+
+  it("defaults to the discard wording, so a caller that does not ask still gets the old sentence", () => {
+    // The parameter is optional on purpose: `confirmMessage(labels)` is what every caller wrote
+    // before #276, and a required argument would have made this a breaking change to a leaf for no
+    // behavioural gain. Pinned so the default cannot silently flip to the in-flight wording, which
+    // would put the alarming sentence in front of operators who are not saving anything.
+    expect(confirmMessage(["Loads"])).toBe(confirmMessage(["Loads"], false));
+    expect(confirmMessage(["Loads"])).toContain("discard");
+  });
+});
+
+describe("confirmDiscard — the seam between the counter and the prompt", () => {
+  // THE WIRE NOTHING ELSE COVERED. `confirmMessage` is a pure function and is exercised above; what
+  // was untested is that anything ever asks it the in-flight question. A reviewer changed
+  // `use-unsaved-section.ts`'s call to the one-argument form — deleting the whole of #276 — and the
+  // suite, tsc and eslint were all green.
+  //
+  // No renderer is needed: `confirmDiscard` is a plain function, not a hook. `window` does not exist
+  // under `environment: "node"`, so it is defined and removed here by plain property save/restore,
+  // the repo's stubbing idiom (never `vi.spyOn` a shared object — `mockRestore` does not reliably
+  // put the original back).
+  const KEY = "seam";
+  let asked: string[] = [];
+
+  beforeEach(() => {
+    asked = [];
+    (globalThis as { window?: unknown }).window = {
+      confirm: (message: string) => { asked.push(message); return true; },
+    };
+  });
+  afterEach(() => {
+    clearUnsaved(KEY);
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("asks nothing at all when no section is dirty, however many requests are open", () => {
+    const end = beginWrite();
+    expect(confirmDiscard()).toBe(true);
+    expect(asked, "a clean page must not be interrupted by someone else's request").toEqual([]);
+    end();
+  });
+
+  it("uses the discard wording when nothing is in flight", () => {
+    markUnsaved(KEY, "Loads");
+    expect(confirmDiscard()).toBe(true);
+    expect(asked).toEqual(["Loads has unsaved changes. Leave the page and discard them?"]);
+  });
+
+  it("switches to the in-flight wording while a request is open, and back when it settles", () => {
+    markUnsaved(KEY, "Loads");
+    const end = beginWrite();
+    confirmDiscard();
+    expect(asked[0]).toContain("a request is still running");
+    expect(asked[0], "and it must still warn about what is NOT saved").toContain("is discarded");
+    end();
+    confirmDiscard();
+    expect(asked[1], "the window closes with the request").toBe(
+      "Loads has unsaved changes. Leave the page and discard them?",
+    );
+  });
+
+  it("returns what the operator answered, both ways", () => {
+    // The guard's callers act on this boolean — `e.preventDefault()` in the Shell's click guard, an
+    // early return before a POST elsewhere. A prompt whose answer is ignored is not a guard.
+    markUnsaved(KEY, "Loads");
+    (globalThis as { window?: unknown }).window = { confirm: () => false };
+    expect(confirmDiscard()).toBe(false);
+    (globalThis as { window?: unknown }).window = { confirm: () => true };
+    expect(confirmDiscard()).toBe(true);
   });
 });

@@ -11,7 +11,7 @@ import { useSearchParams } from "next/navigation";
 import { gate, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
-import { api } from "@/lib/fetcher";
+import { api, trackedFetch } from "@/lib/fetcher";
 import { AGING_BUCKETS, AGING_BUCKET_LABELS, type AgingBucketValue } from "@/lib/ar-constants";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { ReceivablesNav } from "../ReceivablesNav";
@@ -320,7 +320,7 @@ function StatementsScreen() {
     setPrinting(true);
     setPrintError(null);
     try {
-      const res = await fetch("/api/receivables/statements", {
+      const res = await trackedFetch("/api/receivables/statements", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ customerId, asOf, combineFamily, assessFinanceCharges }),

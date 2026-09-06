@@ -7,6 +7,7 @@ import {
   markUnsaved, clearUnsaved, unsavedLabels, confirmMessage, subscribeUnsaved, unsavedCount,
   unsavedPresentExcluding,
 } from "./unsaved-guard";
+import { writesInFlight } from "./in-flight-writes";
 
 /**
  * Declare that this section holds unsaved edits while `dirty` is true, named `label` in the
@@ -43,10 +44,18 @@ export function useUnsavedSection(dirty: boolean, label: string): void {
  * navigates after a mutation. **Call it BEFORE the request**, never after: cancelling a prompt that
  * appears once the invoice or reversal already exists cancels nothing, it just strands the user on
  * a page whose server state has already moved (Codex P1 on #272).
+ *
+ * While a write IS in flight the prompt says so, and says that leaving will not cancel it (#276).
+ * That window is not rare and is not confined to one page: every editor's dirty flag stays set
+ * until its own save lands, so before this the prompt offered to discard changes that were already
+ * committing. The counter comes from `in-flight-writes.ts`, incremented by the one request helper
+ * rather than registered per save, so no page has to remember to take part.
  */
 export function confirmDiscard(): boolean {
   const labels = unsavedLabels();
-  return labels.length === 0 || window.confirm(confirmMessage(labels));
+  // The wording is decided in the pure leaf, which is where it can be exercised both ways without a
+  // DOM; this half only reads the counter and hands `window.confirm` the sentence (#276).
+  return labels.length === 0 || window.confirm(confirmMessage(labels, writesInFlight() > 0));
 }
 
 /**
