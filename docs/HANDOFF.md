@@ -60,13 +60,13 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, PR #301).**
-#276 was filed as a `/shipping/new` bug: leaving while the create POST is in flight still creates
-the shipment, though the prompt the operator accepted said "discard". It is not one page's bug. A
-section's dirty flag means "differs from the server as loaded", so it is cleared by `grid.reset()`
-only AFTER the response lands — verified in every editor — which makes the whole duration of EVERY
-save a window where the section reads dirty and the prompt offers to discard a write that is
-committing. Fourteen registered editors, not one.
+**2026-09-06 — THE UNSAVED-EDIT PROMPT STOPPED LYING ABOUT WHAT LEAVING COSTS (#276, merged
+`2c4efda`, PR #301, squash).** #276 was filed as a `/shipping/new` bug: leaving while the create POST
+is in flight still creates the shipment, though the prompt the operator accepted said "discard". It
+is not one page's bug. A section's dirty flag means "differs from the server as loaded", so it is
+cleared by `grid.reset()` only AFTER the response lands — verified in every editor — so the whole
+duration of EVERY save is a window where the section reads dirty and the prompt offers to discard a
+write that is committing. Fourteen registered editors, not one.
 
 **The blocking mode #276 asked for was not taken (owner ruling).** `api()` sets no timeout and no
 abort signal, so a stalled request would have refused every nav click, the search and sign-out with
