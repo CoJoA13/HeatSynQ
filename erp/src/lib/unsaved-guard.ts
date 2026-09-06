@@ -138,12 +138,47 @@ export function unsavedPresentExcluding(ignoreLabels: readonly string[]): boolea
   return false;
 }
 
-/** The prompt. It NAMES the sections at risk: "you have unsaved changes" is the wording everyone
- *  clicks through, and the section name is the difference between a warning and a speed bump. */
-export function confirmMessage(labels: string[]): string {
+/**
+ * The prompt. It NAMES the sections at risk: "you have unsaved changes" is the wording everyone
+ * clicks through, and the section name is the difference between a warning and a speed bump.
+ *
+ * **`writeInFlight` is what stops it lying (#276).** A section's dirty flag means "differs from the
+ * server as loaded", so it stays set for the whole duration of its own save — `grid.reset()` runs
+ * only after the response lands. That put every save inside a window where this prompt offered to
+ * DISCARD changes that were committing regardless, on all fourteen registered editors rather than
+ * only the `/shipping/new` case #276 was filed about. The request cannot be un-sent, and aborting
+ * would not help: `submitWithConflictRetry` sends a `clientRequestId` so a retry lands as the SAME
+ * write rather than a second one.
+ *
+ * So the wording changes rather than the behaviour. #276 proposed REFUSING instead — a blocking
+ * mode — and that was not taken (owner ruling, 2026-09-06): `api()` sets no timeout, so a stalled
+ * request would refuse every nav click, the search and sign-out with nothing to clear it, and **a
+ * guard the operator cannot clear is worse than no guard**. The truthful prompt strands nobody and
+ * still lets the operator leave.
+ *
+ * **THE IN-FLIGHT ARM ADDS A FACT; IT MUST NOT REPLACE ONE.** The counter behind `writeInFlight` is
+ * app-wide and unattributed — it knows a request is open, never which of these sections issued it.
+ * So the sentence says both things: the open request finishes regardless, AND anything not yet
+ * saved is discarded. A first draft said only the first, and on the order hub — save Containers,
+ * then leave while Charges is still dirty — it told the operator that Charges would survive. It
+ * would not. That trades a false "this will be discarded", which keeps people on the page, for a
+ * false "this will be saved", which invites them off it: strictly worse than the bug being fixed.
+ *
+ * It says "a request", not "a save", for the same honesty: one route answers a POST without writing
+ * (`/api/templates/[id]/preview`), and calling that a save would be a second small lie rather than a
+ * reason to start allowlisting routes.
+ *
+ * `writeInFlight` is passed IN rather than read from a module, so this stays a pure function the
+ * suite can exercise both ways without a DOM (`environment: "node"`).
+ */
+export function confirmMessage(labels: string[], writeInFlight = false): string {
   const subject =
     labels.length === 1
       ? `${labels[0]} has`
       : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]} have`;
+  if (writeInFlight) {
+    return `${subject} unsaved changes, and a request is still running — leaving will not cancel it, `
+      + `and you will not see the result. Anything not yet saved is discarded. Leave the page?`;
+  }
   return `${subject} unsaved changes. Leave the page and discard them?`;
 }
