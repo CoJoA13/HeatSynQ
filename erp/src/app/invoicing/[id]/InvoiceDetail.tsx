@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api } from "@/lib/fetcher";
+import { api, trackedFetch } from "@/lib/fetcher";
 import { percentFromFraction } from "@/lib/rate-display";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -718,7 +718,7 @@ export function InvoiceDetail({ id }: { id: string }) {
     setPrinting(true);
     setPrintError(null);
     try {
-      const res = await fetch(`/api/invoices/${id}/print`, { method: "POST" });
+      const res = await trackedFetch(`/api/invoices/${id}/print`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);

@@ -14,7 +14,7 @@
 // computed `multipart/form-data; boundary=...` Content-Type, and `api()` forces application/json
 // (the `UserSignatureControl` / `AttachmentsSection` precedent).
 import { useRef, useState } from "react";
-import { ApiError } from "@/lib/fetcher";
+import { ApiError, trackedFetch } from "@/lib/fetcher";
 import { CONTENT_WIDTH, LOGO_PLACEMENTS, type LogoPlacement, type TemplateConfig } from "@/lib/template-contracts";
 import { clearLogoPlacement, setLogoPlacement, setLogoWidth } from "@/lib/template-editor";
 
@@ -51,7 +51,7 @@ export function LogoPanel({ templateId, logoMimeType, config, apply, disabled, e
     try {
       const form = new FormData();
       form.set("file", file, file.name);
-      const res = await fetch(path, { method: "POST", body: form });
+      const res = await trackedFetch(path, { method: "POST", body: form });
       if (!res.ok) await readError(res, `Upload failed (${res.status})`); // surfaces the route's sniff/size/MIME 400
       setError(null);
       await onLogoChanged(); // the upload bumped the draft's updatedAt — refresh the save precondition
@@ -67,7 +67,7 @@ export function LogoPanel({ templateId, logoMimeType, config, apply, disabled, e
   async function removeBytes() {
     setBusy(true);
     try {
-      const res = await fetch(path, { method: "DELETE" });
+      const res = await trackedFetch(path, { method: "DELETE" });
       if (!res.ok) await readError(res, `Clear failed (${res.status})`);
       setError(null);
       await onLogoChanged();

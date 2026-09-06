@@ -197,14 +197,19 @@ export function NewShipment() {
   /**
    * Whether this form is still on screen, read after the create POST settles.
    *
-   * KNOWN LIMITATION, stated because it is not fully fixed: leaving while a save is in flight
-   * still creates the shipment, even though the prompt the operator accepted said "discard".
-   * Nothing on the client can un-send a request the server has already taken, and aborting the
-   * fetch would not help — `submitWithConflictRetry` sends a `clientRequestId` precisely so a
-   * retry lands as the same write, not a second one. The complete fix is for the guard to REFUSE
-   * rather than ask while a save is pending, which needs a blocking mode `unsaved-guard.ts` does
-   * not have. What this ref does fix is the part that is ours: a settled save no longer navigates
-   * a page the operator has already left.
+   * Leaving while the create POST is in flight still creates the shipment — nothing on the client
+   * can un-send a request the server has already taken, and aborting would not help, because
+   * `submitWithConflictRetry` sends a `clientRequestId` precisely so a retry lands as the same
+   * write rather than a second one. What this ref fixes is the part that is ours: a settled save no
+   * longer navigates a page the operator has already left.
+   *
+   * The other half — the prompt claiming that leaving would DISCARD the shipment — is fixed in the
+   * guard rather than here (#276). It was never this page's bug: every editor's dirty flag stays
+   * set until its own save lands, so the same untruth sat behind all fourteen of them.
+   * `confirmMessage` now says the save finishes either way, driven by the in-flight write counter
+   * `api()` keeps. #276 proposed REFUSING instead; that was not taken (owner ruling, 2026-09-06) —
+   * `api()` has no timeout, so a stalled request would have refused every navigation in the app
+   * with nothing able to clear it.
    */
   const mounted = useRef(true);
   useEffect(() => {

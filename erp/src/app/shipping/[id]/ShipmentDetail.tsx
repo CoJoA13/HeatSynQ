@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/fetcher";
+import { api, trackedFetch } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
@@ -432,7 +432,7 @@ export function ShipmentDetail({ id }: { id: string }) {
     setCertDocIds([]);
     setPrintWarnings([]);
     try {
-      const res = await fetch(`/api/shippers/${id}/print?${query}`, { method: "POST" });
+      const res = await trackedFetch(`/api/shippers/${id}/print?${query}`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);

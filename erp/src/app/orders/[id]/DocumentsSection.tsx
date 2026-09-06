@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { api, ApiError } from "@/lib/fetcher";
+import { ApiError, api, trackedFetch } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import type { OrderLoad } from "./page";
@@ -129,7 +129,7 @@ export function DocumentsSection({
     setBlocked(null);
     try {
       const query = loadNumber === undefined ? "" : `?load=${loadNumber}`;
-      const res = await fetch(`/api/orders/${orderId}/traveler${query}`, { method: "POST" });
+      const res = await trackedFetch(`/api/orders/${orderId}/traveler${query}`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new ApiError((body as { error?: string }).error ?? `Print failed (${res.status})`, res.status);

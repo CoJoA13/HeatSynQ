@@ -15,7 +15,7 @@
 // mutation-ticket sequence (`useMutationGate`, fix-wave R4 finding 6).
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { api } from "@/lib/fetcher";
+import { api, trackedFetch } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
@@ -336,7 +336,7 @@ export function CertDetail({ id }: { id: string }) {
     setPrinting(true);
     setPrintError(null);
     try {
-      const res = await fetch(`/api/certs/${id}/print`, { method: "POST" });
+      const res = await trackedFetch(`/api/certs/${id}/print`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
