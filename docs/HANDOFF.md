@@ -60,6 +60,28 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-07 (second) — AND CANARY ALREADY FIXES IT: THE VERSION TO TARGET IS 16.4.0 (#209).**
+Next's issue template says to test canary before filing, so the same probe was pointed at
+`16.4.0-canary.19` before anything went upstream. It is not merely fixed — **it is a third cheaper
+than the 16.2.12 we are pinned to**: 4879 MB peak, **243/243 routes, zero failures**, 69.3 s,
+against 16.2.12's 7292/7189 MB and 16.3.4's ≥14002 MB after 91 routes. The minimal repro agrees —
+4.7 MB per API route, FLAT, below 16.2.12's own 6.2. So the 16.3 line is a dead end (16.3.0 and
+16.3.4 are within 0.2 % of each other; no patch will rescue it) and **the bump to wait for is
+16.4.0**, at which point this stops being a catch-up and becomes a real reduction in the E2E gate's
+largest resource cost. Nothing was filed upstream: an already-fixed report is closed as such, which
+is exactly what that template warns about.
+
+**The same check corrected a claim the first entry got wrong.** That entry said `next dev` 16.3.x
+writes `AGENTS.md`/`CLAUDE.md` *unconditionally*. It does not. `ensureAgentRulesForDev`
+(`dist/server/lib/app-info-log.js`) writes them only when `@vercel/detect-agent` reports an agent is
+running, which it decides from ~17 environment variables — `CLAUDECODE`, `CURSOR_AGENT`,
+`GEMINI_CLI`, `CODEX_THREAD_ID` among them. So **your own `npm run dev` produces nothing and CI
+produces nothing**; an AGENT-DRIVEN run dirties the tree every time, and there is **no opt-out** in
+the code — no config key, no env var, no flag, only committing the block or unsetting the variable.
+Deliberate and gated, then, rather than a bug: a missing opt-out, which Next's own `config.yml`
+routes to Discussions rather than Issues. It still has to be answered before a 16.4 bump, because by
+then it is the agent-driven runs that meet it.
+
 **2026-09-07 — NEXT 16.3.4 MEASURED AGAINST 16.2.12 ON THE REAL WARM-UP, AND IT IS A REJECT (#209,
 PR #299).** The 2026-09-04 table below was taken with a probe that issued routes SEQUENTIALLY and
 has since been deleted, and `--disable-source-maps` was adopted *after* it — so the open question
