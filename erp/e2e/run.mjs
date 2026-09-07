@@ -284,6 +284,14 @@ async function waitForServer(url, timeoutMs, devServer) {
 //
 // The peak is dominated by the FIRST page compiled (~4.6 GB — the root layout, shell and shared
 // client graph, not that page specifically); the other 242 routes add ~5 GB between them.
+//
+// **That table was measured SEQUENTIALLY, and the line this file prints at runtime is not.** The
+// real warm-up runs at concurrency 4, against a tree that keeps moving; two runs on 2026-09-07 read
+// 7292 and 7189 MB where this table says 8821. Neither is wrong — they are different instruments on
+// different trees — so compare a live run against another live run, never against this table. The
+// same day's re-measurement settled what those figures had left open: `--disable-source-maps` does
+// NOT rescue 16.3.4, which spends ~273 MB per API ROUTE against 16.2.12's ~26 MB and blows past
+// 13.7 GB after 91 of 243 routes. HANDOFF §4 (2026-09-07) carries both halves.
 function startDevServer() {
   const child = spawn("npx", ["next", "dev", "-p", String(PORT), "--disable-source-maps"], {
     cwd: ERP_ROOT,
