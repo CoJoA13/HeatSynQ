@@ -117,7 +117,12 @@ while the ORPHAN answered all 243 requests from a warm cache. **A measuring inst
 a small reassuring number when it has measured nothing is worse than one that crashes** — so the
 probe now refuses unless the port is free BEFORE the spawn *and* the PID actually listening on it is
 in the child's process group, the second being the only one of those that can tell "our server
-answered" from "something answered". Both guards were mutation-tested against a decoy server.
+answered" from "something answered". Both guards were mutation-tested against a decoy server. **The
+probe is committed this time** — `erp/scripts/warmup-memory-probe.mjs`, which is why these figures
+and the next ones will be comparable and the 2026-09-04 ones are not. It refuses to run if
+`devServerMemoryMeter` stops being byte-identical to its copy, folds the watchdog's reading into the
+peak, and flags `peakCensored` so a killed run can never be read as a completed one; its header
+carries the A/B protocol (cold `.next`, quiet box, run the control twice).
 
 **2026-09-06 (third) — PRISMA 7.9.1 → 7.10.0, AND THE P2002 SHAPE THAT MOVED UNDER IT (#298,
 merged `884ad15`, squash).** The bump itself is routine; what it cost was the two things the gates
