@@ -60,6 +60,70 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-07 — NEXT 16.3.4 MEASURED AGAINST 16.2.12 ON THE REAL WARM-UP, AND IT IS A REJECT (#209,
+PR #299).** The 2026-09-04 table below was taken with a probe that issued routes SEQUENTIALLY and
+has since been deleted, and `--disable-source-maps` was adopted *after* it — so the open question
+was whether the flag rescued 16.3.4. It does not. Three runs on this box (31 GB, Node 26.8.1,
+`.next` deleted before each, box otherwise quiet), replaying exactly what `run.mjs` does before flow
+1 — its own argv including the flag, `waitForServer` on `/login`, then `warmRoutes` at its defaults
+(concurrency 4, 243 routes) — metered with `devServerMemoryMeter` copied VERBATIM from run.mjs, both
+halves:
+
+| | RSS after `/login` | peak RSS | warm wall | routes |
+|---|---|---|---|---|
+| 16.2.12 (run A) | 993 MB | **7292 MB** (complete) | 75.0 s | 243/243, 0 failures |
+| 16.2.12 (run C) | 977 MB | **7189 MB** (complete) | 76.9 s | 243/243, 0 failures |
+| **16.3.4** (run B) | 905 MB | **≥14002 MB** (censored) | killed at 27 s | **91/243 — ceiling** |
+
+A and C are the same version measured twice, **1.4 % apart** — that is the noise floor, and it is
+what makes B mean anything. **These are not comparable to the 2026-09-04 table**: a different
+instrument (concurrent, not sequential), which is the whole reason 16.2.12 reads 7.2 GB here and
+8821 MB there. Compare like with like or not at all.
+
+**And do not read 7292 against 14002 as "1.9×" — B's column is not the same construct as A's, which
+an adversarial review of the probe caught after these numbers were first written up.** B is a FLOOR:
+right-censored 63 % of the way through the queue, and taken with only one of the meter's two
+estimators surviving. `devServerMemoryMeter` returns `Math.max(sampler, VmHWM-sum)`, but the
+watchdog had already SIGKILLed the group, so `devServerPeakRssMb` matched no live PID in the pgid
+and returned 0 — the max degenerated to the sampler's 13776 MB, which is how a reported "peak" ended
+up 226 MB BELOW the watchdog's own 14002 MB reading stored in the next field. That inversion is the
+tell, and it is the failure CLAUDE.md already names at this meter ("needs both halves… do not
+simplify it to one reading") arriving by a route that file does not cover: not a simplification, a
+kill. **The commensurable comparison is at EQUAL WORK, and it is worse: at 90 routes, 3809 MB
+against 13634 MB — 3.6× — with B still climbing 2.5–3.7 GB per 10 routes when it died.**
+
+**The mechanism, sharper than #209 had it.** The warm-up issues the 45 pages first and the 198 API
+routes after, so sampling RSS every 10 completions separates them cleanly. **Through the PAGES
+16.3.4 is LEANER — 1533 MB against 2430 MB at 40 routes, 37 % less.** Then the API routes start and
+the curve goes vertical: over the first 40 of them 16.2.12 costs **26 MB each** and 16.3.4 costs
+**273 MB each, 10.5×**, which extrapolates to ~56 GB for all 198. So this is not "16.3 is heavier"
+and not a headroom problem to tune around on a bigger runner — `next dev` on this app is not viable
+on 16.3.4 on any machine we have. **Next and eslint-config-next stay at 16.2.12.** Nothing on the
+upstream tracker matches that signature (pages cheaper, API routes ~10× dearer), so the cause is
+MEASURED, not confirmed; the repro is small enough to file upstream if we decide to.
+
+**Two things the measurement itself taught, both worth more than the numbers.** (1) `next dev` on
+**16.3.4 writes `AGENTS.md` and `CLAUDE.md` into `erp/`** and re-creates them when deleted
+(`node_modules/next/dist/server/lib/generate-agent-files.js`, which does not exist in 16.2.12);
+`erp/CLAUDE.md` is the 11 bytes `@AGENTS.md`. That is two problems, not one — the E2E suite would
+leave a dirty tree on every run, and a DEPENDENCY would be placing agent instructions at a path
+Claude Code reads, one directory below the reviewed root `CLAUDE.md`. Any future 16.3 bump has to
+answer that too, independently of memory. (2) **The probe's first 16.3.4 run reported 225 MB,
+booting in 0.1 s and warming all 243 routes in 1.1 s** — a number that reads as "the regression is
+fixed" and was entirely false. An orphaned 16.2.12 server still held the port; 16.3.4 died with
+`EADDRINUSE` (16.3 dropped 16.2's *"Port N is in use, trying N+1 instead"* fallback, so **run.mjs's
+own port-mismatch guard could not have fired either**); and the meter watched our own dying wrapper
+while the ORPHAN answered all 243 requests from a warm cache. **A measuring instrument that reports
+a small reassuring number when it has measured nothing is worse than one that crashes** — so the
+probe now refuses unless the port is free BEFORE the spawn *and* the PID actually listening on it is
+in the child's process group, the second being the only one of those that can tell "our server
+answered" from "something answered". Both guards were mutation-tested against a decoy server. **The
+probe is committed this time** — `erp/scripts/warmup-memory-probe.mjs`, which is why these figures
+and the next ones will be comparable and the 2026-09-04 ones are not. It refuses to run if
+`devServerMemoryMeter` stops being byte-identical to its copy, folds the watchdog's reading into the
+peak, and flags `peakCensored` so a killed run can never be read as a completed one; its header
+carries the A/B protocol (cold `.next`, quiet box, run the control twice).
+
 **2026-09-06 (third) — PRISMA 7.9.1 → 7.10.0, AND THE P2002 SHAPE THAT MOVED UNDER IT (#298,
 merged `884ad15`, squash).** The bump itself is routine; what it cost was the two things the gates
 found. **`allowScripts` is version-pinned**, so the bump left `prisma@7.9.1` and
