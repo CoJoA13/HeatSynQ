@@ -23,6 +23,7 @@ import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
 import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
 import { confirmDiscard, useUnsavedPresent } from "@/lib/use-unsaved-section";
+import { shipmentOrderScope, unsavedPresentInScope } from "@/lib/unsaved-guard";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/shippers.ts's exported row shapes — not imported from
@@ -651,6 +652,25 @@ export function ShipmentDetail({ id }: { id: string }) {
   }
 
   async function removeOrder(shipperOrderId: string, label: string) {
+    // #294. `removeOrderFromShipper` deleteMany's this order's shipperLine, shipperContainer and
+    // shipperSerial rows — precisely the three grids this order's panel is holding — so it REPLACES
+    // server rows an editor owns and must refuse rather than warn. The confirm below already NAMED
+    // the loss, which made this the harder gap to see: it reads well and consults nothing, so it
+    // could not say that some of what it drops was never saved, and could not decline.
+    //
+    // SCOPED to this order's panel. A page-wide `useUnsavedPresent()` would refuse removing order A
+    // because order B's grid is dirty, and this page already over-refuses that way for the prints
+    // (`printGate`, above, is page-wide by design: a print archives what the SERVER holds, so any
+    // unsaved editor can make the paper disagree with the screen). Reusing that binding here would
+    // also recreate the one-answer-many-gates shape #294 was filed about.
+    // Clearable by saving or reloading, like #293's — see the note at LinesSection.removeLine for
+    // why the absence of a per-grid Discard makes that clumsier than it should be.
+    const panelUnsaved = unsavedPresentInScope(shipmentOrderScope(shipperOrderId));
+    if (panelUnsaved) {
+      setError(`Order ${label} has unsaved lines, containers or serials on this shipment. Removing ` +
+        `it drops those rows, so save them first — or reload the page to discard them.`);
+      return;
+    }
     if (!confirm(`Remove order ${label} from this shipment? Its lines, containers and serials on this shipment are dropped.`)) return;
     try {
       await applyMutation(() => api<ShipperMutationResult>(

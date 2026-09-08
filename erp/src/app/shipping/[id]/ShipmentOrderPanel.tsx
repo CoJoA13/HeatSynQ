@@ -23,6 +23,7 @@ import {
 } from "../ShipmentGrids";
 import type { ApplyMutation, OrderCatalog, ShipperOrder, ShipperMutationResult } from "./ShipmentDetail";
 import { SaveButton } from "@/components/SaveButton";
+import { shipmentOrderScope } from "@/lib/unsaved-guard";
 
 /** Read-only strip for RELEASED rows (snapshot + release, ruling 23): the order-side row was
  *  corrected away, so these render from their snapshots, stay out of the editable grid and its
@@ -123,7 +124,7 @@ function LinesGrid({
     <LinesGridView rows={rows} candidates={candidates} infoByLineId={infoByLineId} shippedByLineId={shippedByLineId}
                    gate={editGate} orphanWarning={grid.orphanWarning}
                    onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                   footer={<SaveButton label="Save lines" section="Lines" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                   footer={<SaveButton label="Save lines" section="Lines" scope={shipmentOrderScope(shipperOrderId)} gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>);
 }
 
@@ -183,7 +184,7 @@ function ContainersGrid({
     <ContainersGridView rows={rows} candidates={candidates} infoById={infoById}
                         gate={editGate} orphanWarning={grid.orphanWarning}
                         onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                        footer={<SaveButton label="Save containers" section="Containers" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                        footer={<SaveButton label="Save containers" section="Containers" scope={shipmentOrderScope(shipperOrderId)} gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>);
 }
 
@@ -236,7 +237,7 @@ function SerialsGrid({
     <SerialsGridView rows={rows} candidates={candidates} infoById={infoById}
                      gate={editGate} orphanWarning={grid.orphanWarning}
                      onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
-                     footer={<SaveButton label="Save serials" section="Serials" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+                     footer={<SaveButton label="Save serials" section="Serials" scope={shipmentOrderScope(shipperOrderId)} gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
   </>
   );
 }

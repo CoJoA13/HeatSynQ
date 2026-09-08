@@ -450,9 +450,16 @@ function gateBindings(file: string, src = read(file)):
     walk(node);
     return hit;
   };
+  // THREE taint sources, not one. `useUnsavedPresent` answers page-wide; `useUnsavedInScope` and its
+  // pure predicate `unsavedPresentInScope` answer about ONE named region, which is what #293/#294
+  // needed — the page-wide question would have refused those two controls over sections their write
+  // provably cannot touch. A gate derived from any of the three is derived from the registry, which
+  // is the property this proves; leaving the scoped pair out would have read the two new refusals as
+  // ungated and pushed them back onto the exemption list.
+  const UNSAVED_SOURCES = ["useUnsavedPresent", "useUnsavedInScope", "unsavedPresentInScope"];
   for (const d of decls) {
     if (mentions(d.init, (n) => ts.isCallExpression(n) && ts.isIdentifier(n.expression)
-      && n.expression.text === "useUnsavedPresent")) tainted.add(d.name);
+      && UNSAVED_SOURCES.includes(n.expression.text))) tainted.add(d.name);
   }
   for (let grew = true; grew; ) {
     grew = false;
@@ -491,9 +498,174 @@ function gateBindings(file: string, src = read(file)):
   return { tainted, uses, refusals };
 }
 
-/** Does this file ask before discarding — as a CALL, never as an import or a mention (#188)? */
+/** Does this file ask before discarding — as a CALL, never as an import or a mention (#188)? The
+ *  file-scope half of the ask proof; `asksBeforeRequest` is what ties it to one control. */
 const callsConfirmDiscard = (file: string): boolean =>
   callsBareIdentifier(read(file), "confirmDiscard", file);
+
+const FN_LIKE = (n: ts.Node): boolean =>
+  ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n)
+  || ts.isMethodDeclaration(n);
+
+/**
+ * The function-like nodes whose LINE RANGE covers `line` (1-based), innermost FIRST.
+ *
+ * A chain rather than the innermost one, because the innermost is routinely anonymous and is not
+ * the control: every mutation on this tree goes through `applyMutation(() => api(...))`, so the
+ * node containing the request is that callback, while the thing a click reaches is the named
+ * function around it (`resplit`, `reverseAction`). Lines rather than positions because a request
+ * site is recorded by line, and a one-line `const f = () => api(...)` starts its arrow after the
+ * line's first character.
+ */
+function enclosingFns(sf: ts.SourceFile, line: number): ts.Node[] {
+  const chain: ts.Node[] = [];
+  const lineOf = (pos: number): number => sf.getLineAndCharacterOfPosition(pos).line + 1;
+  const walk = (n: ts.Node): void => {
+    if (lineOf(n.getStart(sf)) <= line && line <= lineOf(n.getEnd())) {
+      if (FN_LIKE(n)) chain.unshift(n);
+      ts.forEachChild(n, walk);
+    }
+  };
+  ts.forEachChild(sf, walk);
+  return chain;
+}
+
+/** The name a function-like node is reachable by — its own, or the const it is assigned to. */
+function fnName(n: ts.Node): string | undefined {
+  if (ts.isFunctionDeclaration(n) && n.name) return n.name.text;
+  const p = n.parent as ts.Node | undefined;
+  if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
+  return undefined;
+}
+
+const mentionsAsk = (node: ts.Node): boolean => {
+  let hit = false;
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)
+      && n.expression.text === "confirmDiscard") hit = true;
+    ts.forEachChild(n, walk);
+  };
+  walk(node);
+  return hit;
+};
+
+/**
+ * Every scope helper, and the sites that REGISTER a scope versus the sites that ASK about one.
+ *
+ * **The hole this closes, found by mutation.** A scoped gate has two ends: a section registers
+ * `scope={serialsScope(line.id)}` and a control asks `unsavedPresentInScope(serialsScope(line.id))`.
+ * The gate proof above only sees the ASKING end — it checks that a binding still reads the registry
+ * and still refuses a control. Delete the `scope` prop from the registration and every one of those
+ * checks stays green while the predicate matches nothing, answers false forever, and the refusal
+ * silently stops refusing. That is a guard that has been switched off without a single test noticing,
+ * which is precisely the defect class this file exists for.
+ *
+ * The two ends cannot drift on the STRING — both call the same helper out of `unsaved-guard.ts` —
+ * so the only thing left to prove is that both ends still EXIST. Deriving the helper list from the
+ * leaf's own exports rather than listing it here means a third scope cannot be added with only one
+ * end wired.
+ */
+function scopeHelperSites(): Map<string, { registers: number; queries: number }> {
+  const leaf = read("src/lib/unsaved-guard.ts");
+  const helpers = [...leaf.matchAll(/^export const (\w*Scope) = /gm)].map((m) => m[1]);
+  const out = new Map(helpers.map((h) => [h, { registers: 0, queries: 0 }]));
+  const ASKS = ["unsavedPresentInScope", "useUnsavedInScope"];
+  const REGISTERS = ["useUnsavedSection"];
+  for (const file of clientFiles()) {
+    const sf = parseSource(file);
+    const walk = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && out.has(n.expression.text)) {
+        const entry = out.get(n.expression.text) as { registers: number; queries: number };
+        let a: ts.Node | undefined = n.parent;
+        while (a) {
+          if (ts.isJsxAttribute(a) && ts.isIdentifier(a.name) && a.name.text === "scope") { entry.registers += 1; break; }
+          if (ts.isCallExpression(a) && ts.isIdentifier(a.expression)) {
+            if (REGISTERS.includes(a.expression.text)) { entry.registers += 1; break; }
+            if (ASKS.includes(a.expression.text)) { entry.queries += 1; break; }
+          }
+          a = a.parent;
+        }
+      }
+      ts.forEachChild(n, walk);
+    };
+    ts.forEachChild(sf, walk);
+  }
+  return out;
+}
+
+/**
+ * Does the control that issues THIS route's request ask first? Proved per control, not per file.
+ *
+ * **Why the file-scoped version had to go (#294).** `ShipmentDetail.tsx` already calls
+ * `confirmDiscard()` inside `reverseAction`, so "does this file ask anywhere" was TRUE for every
+ * control in it — including remove-order, which asked nothing. Marking remove-order
+ * `{ confirmDiscard: true }` would have gone green with zero production change: a test blessing a
+ * no-op, which is this repo's most-refiled defect. The gate half has been per-control since #277 for
+ * the mirror-image reason (one `useUnsavedPresent()` answer feeding three gates); this closes the
+ * other half.
+ *
+ * TWO accepted shapes, because the two real call sites differ and both are legitimate:
+ *   (a) the function that issues the request calls `confirmDiscard` itself — `reverseAction`;
+ *   (b) it is only ever REACHED through an ask — `resplit` is called once, from
+ *       `onClick={() => { if (confirmDiscard()) void resplit(); }}`, so the ask sits in the JSX
+ *       handler while the request sits in the function beside it.
+ * Shape (b) demands EVERY local reference be guarded, not merely one: a second unguarded caller is
+ * exactly the hole this is here to find.
+ *
+ * Fails CLOSED throughout — no matching request site, an anonymous enclosing function, or a
+ * reference this cannot attribute all report unproved, because "cannot tell" must never read as
+ * "guarded".
+ */
+function asksBeforeRequest(file: string, route: string, src = read(file)): string | null {
+  const sf = parseSource(file, src);
+  const sites = requestSites(file, src).routed
+    .filter((site) => isMutating(site) && urlMatchesRoute(site.url, route));
+  if (sites.length === 0) return "no mutating request to this route to attribute an ask to";
+
+  for (const site of sites) {
+    const chain = enclosingFns(sf, site.line);
+    // The CONTROL is the innermost NAMED function around the request, not the innermost function:
+    // the innermost is `applyMutation`'s anonymous callback on every mutation in this tree.
+    const idx = chain.findIndex((n) => fnName(n) !== undefined);
+    if (idx === -1) return `${site.url} (line ${site.line}) sits in no named function to attribute`;
+    const fn = chain[idx];
+    const name = fnName(fn) as string;
+    // A capitalised name is a COMPONENT by this tree's convention, which means the request is issued
+    // straight from JSX with no named control between. Shape (b) cannot apply (nothing calls a
+    // component locally) and shape (a) would collapse back to file scope — `mentionsAsk` on a whole
+    // component is true if ANY handler in it asks, which is the laxity #294 exposed. Fail closed.
+    if (/^[A-Z]/.test(name)) {
+      return `${site.url} is issued directly inside the component ${name}, with no named control ` +
+        `to attribute an ask to`;
+    }
+    if (mentionsAsk(fn)) continue;                                  // shape (a)
+
+    // Shape (b): every reference to it outside its own body must sit under an ask. Both counts are
+    // kept, because "no reference is unguarded" and "there is no reference" are the same number and
+    // opposite answers — collapsing them would pass a function nothing calls, which is a control
+    // that cannot be reached at all rather than one that is guarded.
+    const refs: number[] = [];
+    const unguarded: number[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isIdentifier(n) && n.text === name
+        && !(n.getStart(sf) >= fn.getStart(sf) && n.getEnd() <= fn.getEnd())
+        && !(n.parent && ts.isVariableDeclaration(n.parent) && n.parent.name === n)
+        && !(n.parent && ts.isFunctionDeclaration(n.parent) && n.parent.name === n)
+        && !(n.parent && ts.isImportSpecifier(n.parent))) {
+        const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+        refs.push(line);
+        let holder: ts.Node | undefined = n.parent;
+        while (holder && !FN_LIKE(holder) && !ts.isJsxAttribute(holder)) holder = holder.parent;
+        if (!holder || !mentionsAsk(holder)) unguarded.push(line);
+      }
+      ts.forEachChild(n, visit);
+    };
+    ts.forEachChild(sf, visit);
+    if (refs.length === 0) return `nothing calls ${name}, so no ask can reach ${site.url}`;
+    if (unguarded.length > 0) return `${name} is reached unguarded at line(s) ${unguarded.join(", ")}`;
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------------------------
 // THE SEEDS
@@ -549,8 +721,12 @@ const REPLACE_SEEDS: Map<FnKey, string> = new Map([
  *
  * `gate` names a binding this file must still be computing FROM `useUnsavedPresent()` AND still
  * refusing a control with — so both deleting the gate's unsaved branch and disconnecting the button
- * from the gate red, even when the file keeps other gates. `confirmDiscard` is proved only at file
- * scope (residual 2). `allowed` is an exemption whose reason must open by naming which of THREE
+ * from the gate red, even when the file keeps other gates. The gate may read the page-wide
+ * `useUnsavedPresent` or the SCOPED `useUnsavedInScope`/`unsavedPresentInScope`, which is what lets a
+ * control that destroys one region refuse on that region alone. `confirmDiscard` is proved per
+ * control too since #294 — `asksBeforeRequest` ties the ask to the function that issues THIS
+ * request, because the file-scoped version was already true for every control in a file where one
+ * unrelated handler asked. `allowed` is an exemption whose reason must open by naming which of THREE
  * claims it makes: NOTHING TO GUARD (the page holds no editor), GUARDED OTHERWISE (it is protected
  * by something this sweep cannot prove), or NOT GUARDED — a real gap, recorded rather than fixed.
  * The third is the dangerous one, so it costs more: it must cite an issue, and how many may exist at
@@ -609,20 +785,13 @@ const CONTROL_VERDICTS: Map<string, Verdict> = new Map([
       + "the whole consequence — everything entered in the practice copy is erased and replaced with "
       + "the sample data — which is a stronger warning than the shared prompt's. The route is "
       + "refused outright on a non-practice database, so this can never reach production rows." }],
+  // Both of these were NOT GUARDED exemptions until #293/#294 were fixed. Their gates are SCOPED —
+  // `unsavedPresentInScope`, not `useUnsavedPresent` — because each control destroys one region and
+  // the page-wide answer would refuse it over sections its write cannot touch.
   ["src/app/orders/[id]/LinesSection.tsx :: /api/orders/{}/lines/{}",
-    { allowed:
-      "REPLACES, NOT GUARDED — a gap this sweep found, recorded rather than fixed here. `removeLine` "
-      + "hard-deletes the line's `OrderSerial` rows, and `SerialsSection` holds exactly those in a "
-      + "registered overlay; the `confirm` at :222 names the LINE and never the unsaved serials, and "
-      + "the pair also covers this file's two field PATCHes, which are ordinary blur saves; and "
-      + "consults nothing. Filed as #293; changing the control is a behaviour decision, not part "
-      + "of building the census that found it." }],
+    { gate: "lineSerialsUnsaved" }],
   ["src/app/shipping/[id]/ShipmentDetail.tsx :: /api/shippers/{}/orders/{}",
-    { allowed:
-      "REPLACES, NOT GUARDED — the same gap on the shipment page, and the reason this sweep proves "
-      + "gates per control rather than per file: `removeOrder` at :653 asks a bare `confirm` that "
-      + "does name the loss, while the file's OTHER controls are properly gated, so a file-scoped "
-      + "rule would have blessed it. Filed as #294." }],
+    { gate: "panelUnsaved" }],
 ]);
 
 /**
@@ -937,14 +1106,38 @@ describe("#277 — every control that archives paper or replaces rows carries a 
     expect(broken).toEqual([]);
   });
 
-  it("proves each asking gate still calls confirmDiscard", () => {
-    // File scope, and the header says why it cannot be narrower: the call sits in a JSX handler while
-    // the request is issued in a function beside it.
-    const broken = [...CONTROL_VERDICTS]
-      .filter(([, v]) => "confirmDiscard" in v)
-      .map(([key]) => key.split(" :: ")[0])
-      .filter((file) => !callsConfirmDiscard(file));
+  it("proves each asking gate asks on THE CONTROL that issues the request", () => {
+    // Per CONTROL since #294, and that is the whole point of the change. `ShipmentDetail.tsx` calls
+    // `confirmDiscard()` inside `reverseAction`, so the old file-scoped rule was already true for
+    // every control in that file — marking remove-order as an ask would have gone green with no
+    // production change at all. Now the ask has to reach the request: either in the same function,
+    // or through every reference to it.
+    const broken: string[] = [];
+    for (const [key, verdict] of CONTROL_VERDICTS) {
+      if (!("confirmDiscard" in verdict)) continue;
+      const [file, route] = key.split(" :: ");
+      // Both halves. The file-scoped call check keeps #188's blind spot closed (an import left
+      // behind is not a call), and the per-control check ties that call to this request.
+      if (!callsConfirmDiscard(file)) { broken.push(`${key}: the file no longer calls confirmDiscard`); continue; }
+      const why = asksBeforeRequest(file, route);
+      if (why) broken.push(`${key}: ${why}`);
+    }
     expect(broken).toEqual([]);
+  });
+
+  it("keeps both ends of every scoped gate wired — a registration AND a question", () => {
+    // Found by mutation on this very PR: deleting `scope={serialsScope(line.id)}` from
+    // SerialsSection's SaveButton left every other assertion in this file green, while
+    // `unsavedPresentInScope` matched nothing, answered false forever, and #293's refusal quietly
+    // stopped refusing. The asking end is proved by the gate rule; this is the registering end.
+    const problems: string[] = [];
+    const sites = scopeHelperSites();
+    expect(sites.size, "scope helpers found in the leaf").toBeGreaterThan(0);
+    for (const [helper, { registers, queries }] of sites) {
+      if (registers === 0) problems.push(`${helper}: nothing REGISTERS this scope, so it can never match`);
+      if (queries === 0) problems.push(`${helper}: nothing ASKS about this scope, so registering it guards nothing`);
+    }
+    expect(problems).toEqual([]);
   });
 
   it("keeps every exemption a reason somebody wrote, and states which claim it makes", () => {
@@ -979,11 +1172,14 @@ describe("#277 — every control that archives paper or replaces rows carries a 
       }
     }
     expect(problems).toEqual([]);
-    // Pinned, not floored: a third known-unguarded control is a decision somebody makes, not a line
-    // of prose somebody adds. Both of today's were found by this sweep and filed as #293 and #294.
+    // Pinned, not floored, and now at ZERO: the two this sweep originally found (#293 removeLine,
+    // #294 removeOrderFromShipper) both carry real scoped gates since the registry learned to name a
+    // region. A pin rather than a floor means re-introducing one is a decision somebody makes rather
+    // than a line of prose somebody adds — and it fails in BOTH directions, so a future gap cannot be
+    // absorbed silently and a fixed one cannot leave a stale exemption behind.
     const notGuarded = [...CONTROL_VERDICTS.values()]
       .filter((v) => "allowed" in v && /^(ARCHIVES|REPLACES), NOT GUARDED/.test(v.allowed));
-    expect(notGuarded.length, "known-unguarded controls").toBe(2);
+    expect(notGuarded.length, "known-unguarded controls").toBe(0);
   });
 
   it("keeps the client-to-route join intact — every mutating request resolves to a real route", () => {

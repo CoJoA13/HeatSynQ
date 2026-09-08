@@ -5,7 +5,7 @@
 import { useEffect, useId, useSyncExternalStore } from "react";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, confirmMessage, subscribeUnsaved, unsavedCount,
-  unsavedPresentExcluding,
+  unsavedPresentExcluding, unsavedPresentInScope,
 } from "./unsaved-guard";
 import { writesInFlight } from "./in-flight-writes";
 
@@ -20,16 +20,24 @@ import { writesInFlight } from "./in-flight-writes";
  *
  * The key is a `useId`, so two instances of the same section on one page (a multi-order shipment
  * panel, say) register independently and one going clean cannot clear the other.
+ *
+ * `scope` NAMES THE ROWS, where the key merely separates registrations. The key is opaque and is
+ * never surfaced, so it can distinguish two sections but cannot let a caller ASK about one of them;
+ * that is the gap #293 fell through, since every line's serials editor registers the same label
+ * under a different `useId`. Pass a scope wherever a control destroys this section's rows on their
+ * own — `serials:<lineId>`, `shipment-order:<shipperOrderId>` — and that control can then refuse on
+ * exactly these edits instead of on the whole page. It is in the dependency array with the rest, so
+ * a section whose rows are re-identified re-registers rather than answering under a stale name.
  */
-export function useUnsavedSection(dirty: boolean, label: string): void {
+export function useUnsavedSection(dirty: boolean, label: string, scope?: string): void {
   const key = useId();
   useEffect(() => {
-    if (dirty) markUnsaved(key, label);
+    if (dirty) markUnsaved(key, label, scope);
     else clearUnsaved(key);
     // Unmounting is leaving: a section that goes away cannot still be holding edits, and without
     // this a navigated-away page would keep the prompt armed forever.
     return () => clearUnsaved(key);
-  }, [key, dirty, label]);
+  }, [key, dirty, label, scope]);
 }
 
 /**
@@ -79,6 +87,28 @@ export function useUnsavedPresent(ignoreLabels?: readonly string[]): boolean {
     // A boolean, so `useSyncExternalStore`'s snapshot identity is stable even though this closure
     // is not. Pass a module-level constant for `ignoreLabels`, never an inline array.
     () => (ignoreLabels === undefined ? unsavedCount() > 0 : unsavedPresentExcluding(ignoreLabels)),
+    () => false,
+  );
+}
+
+/**
+ * Whether the rows registered under exactly `scope` are holding unsaved edits — for gating a control
+ * that destroys THAT region and nothing else.
+ *
+ * The narrow counterpart to `useUnsavedPresent`, and the two are not interchangeable. A print
+ * archives what the SERVER holds, so any unsaved editor on the page can make the paper disagree
+ * with the screen and the page-wide question is the right one. `removeLine` and
+ * `removeOrderFromShipper` destroy one line's serials and one order's three grids respectively, so
+ * the page-wide question would refuse them over sections the write cannot reach — and a refusal the
+ * operator cannot explain is the one they learn to work around.
+ *
+ * Same `useSyncExternalStore` shape and the same reason: a boolean snapshot is referentially stable
+ * where an array would read as a new snapshot on every render and loop.
+ */
+export function useUnsavedInScope(scope: string): boolean {
+  return useSyncExternalStore(
+    subscribeUnsaved,
+    () => unsavedPresentInScope(scope),
     () => false,
   );
 }

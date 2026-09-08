@@ -24,10 +24,18 @@ import { useUnsavedSection } from "@/lib/use-unsaved-section";
  * `section` is the human name the prompt uses ("Containers has unsaved changes…"), so it is a
  * separate prop from `label`: the button reads "Save containers", the sentence needs "Containers".
  */
-export function SaveButton({ label, section, gate, dirty, onSave, alsoUnsaved = false }: {
+export function SaveButton({ label, section, scope, gate, dirty, onSave, alsoUnsaved = false }: {
   label: string;
   /** Human name of the section for the navigation prompt — capitalised, e.g. "Containers". */
   section: string;
+  /**
+   * Names the ROWS this button saves, where `section` names them for a human — `serials:<lineId>`,
+   * `shipment-order:<shipperOrderId>`. Pass it wherever a control on the page destroys this
+   * section's rows on their own, so that control can refuse on exactly these edits
+   * (`useUnsavedInScope`) instead of on any dirty grid anywhere. Sections nothing destroys
+   * piecemeal leave it out, and nothing changes for them.
+   */
+  scope?: string;
   gate: Gate;
   dirty: boolean;
   onSave: () => void;
@@ -41,7 +49,7 @@ export function SaveButton({ label, section, gate, dirty, onSave, alsoUnsaved = 
    */
   alsoUnsaved?: boolean;
 }) {
-  useUnsavedSection(dirty || alsoUnsaved, section);
+  useUnsavedSection(dirty || alsoUnsaved, section, scope);
   return (
     <span className="inline-flex items-center gap-2">
       <button onClick={onSave} disabled={!gate.allowed || !dirty} title={gate.title}
