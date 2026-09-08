@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   markUnsaved, clearUnsaved, unsavedLabels, subscribeUnsaved,
   shouldGuardNavigation, confirmMessage, unsavedCount, leavesCurrentPage,
-  unsavedPresentExcluding, type NavIntent,
+  unsavedPresentExcluding, unsavedPresentInScope, type NavIntent,
 } from "@/lib/unsaved-guard";
 import { confirmDiscard } from "@/lib/use-unsaved-section";
 import { beginWrite } from "@/lib/in-flight-writes";
@@ -199,6 +199,102 @@ describe("unsavedPresentExcluding", () => {
 
   it("is false when nothing is dirty at all", () => {
     expect(unsavedPresentExcluding(IGNORED)).toBe(false);
+  });
+});
+
+describe("unsavedPresentInScope", () => {
+  // #293/#294. The order hub mounts one serials editor PER LINE and every one registers the same
+  // label "Serials", so the only question `removeLine` needs answered — "are THIS line's serials
+  // dirty" — could not be asked at all. These pin that it now can, and that it stays narrow: a
+  // predicate that answered true for a sibling line would refuse a control over rows it cannot
+  // touch, which is the over-refusal the scope exists to avoid.
+  const A = "line-a-serials";
+  const B = "line-b-serials";
+  const UNSCOPED = "charges-no-scope";
+  afterEach(() => { clearUnsaved(A); clearUnsaved(B); clearUnsaved(UNSCOPED); });
+
+  it("reports a section registered under exactly that scope", () => {
+    markUnsaved(A, "Serials", "serials:line-a");
+    expect(unsavedPresentInScope("serials:line-a")).toBe(true);
+  });
+
+  it("does NOT report a sibling that shares the label under a different scope", () => {
+    // The whole point. Both are "Serials"; only line-b is dirty; removing line-a must not refuse.
+    markUnsaved(B, "Serials", "serials:line-b");
+    expect(unsavedPresentInScope("serials:line-a")).toBe(false);
+    expect(unsavedPresentInScope("serials:line-b")).toBe(true);
+  });
+
+  it("does not report a section that registered no scope at all", () => {
+    // Charges and Containers carry no lineId, so removeLine cannot destroy them and must not
+    // refuse over them.
+    markUnsaved(UNSCOPED, "Charges");
+    expect(unsavedPresentInScope("serials:line-a")).toBe(false);
+  });
+
+  it("is false for a scope nothing registered, rather than throwing or defaulting true", () => {
+    expect(unsavedPresentInScope("shipment-order:nobody")).toBe(false);
+  });
+
+  it("still reports the scoped section once the sibling is added beside it", () => {
+    markUnsaved(A, "Serials", "serials:line-a");
+    markUnsaved(B, "Serials", "serials:line-b");
+    expect(unsavedPresentInScope("serials:line-a")).toBe(true);
+    expect(unsavedPresentInScope("serials:line-b")).toBe(true);
+  });
+
+  it("keeps the PROMPT naming the label once, however many scopes share it", () => {
+    // The scope is for gating, not for wording: two dirty lines are still "Serials has unsaved
+    // changes", never "Serials and Serials have".
+    markUnsaved(A, "Serials", "serials:line-a");
+    markUnsaved(B, "Serials", "serials:line-b");
+    expect(unsavedLabels()).toEqual(["Serials"]);
+  });
+
+  it("does not count a scoped section as excluded when the label is ignored", () => {
+    // unsavedPresentExcluding still reads the LABEL, so the traveler print gate's exclusions keep
+    // working unchanged now that a scope rides alongside.
+    markUnsaved(A, "Serials", "serials:line-a");
+    expect(unsavedPresentExcluding(["Serials"])).toBe(false);
+    expect(unsavedPresentExcluding(["Charges"])).toBe(true);
+  });
+});
+
+describe("markUnsaved idempotence with a scope", () => {
+  const K = "idempotence-key";
+  afterEach(() => { clearUnsaved(K); });
+
+  it("does not notify when the same label AND scope are re-marked", () => {
+    // A re-render must not wake the UI. The check used to be `get(key) === label`; with an object
+    // value that identity comparison is false on EVERY render, so without comparing fields this
+    // notifies on every render of every dirty section.
+    markUnsaved(K, "Serials", "serials:line-a");
+    const seen = vi.fn();
+    const stop = subscribeUnsaved(seen);
+    markUnsaved(K, "Serials", "serials:line-a");
+    expect(seen).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("DOES notify when only the scope changes, so a re-identified section is not stale", () => {
+    markUnsaved(K, "Serials", "serials:line-a");
+    const seen = vi.fn();
+    const stop = subscribeUnsaved(seen);
+    markUnsaved(K, "Serials", "serials:line-b");
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(unsavedPresentInScope("serials:line-b")).toBe(true);
+    expect(unsavedPresentInScope("serials:line-a")).toBe(false);
+    stop();
+  });
+
+  it("DOES notify when a scope is added to a section that had none", () => {
+    markUnsaved(K, "Serials");
+    const seen = vi.fn();
+    const stop = subscribeUnsaved(seen);
+    markUnsaved(K, "Serials", "serials:line-a");
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(unsavedPresentInScope("serials:line-a")).toBe(true);
+    stop();
   });
 });
 

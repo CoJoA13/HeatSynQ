@@ -23,20 +23,49 @@
 // hand-listed, and an exemption is an allowlist entry with a reason. The shared SaveButton registers
 // for its own consumers, but that alone never covered the editors that do not use it.
 
+/**
+ * What one registered section contributes: the human `label` the prompt names, and an optional
+ * `scope` naming the ROWS it holds.
+ *
+ * **Why a scope exists at all (#293/#294).** A gate could previously ask only "is anything dirty"
+ * or "is anything outside these LABELS dirty", and both are too coarse for a control that destroys
+ * one region of the page. The order hub mounts one serials editor PER LINE and every one of them
+ * registers the identical label `"Serials"` — so "are this line's serials dirty", the only question
+ * `removeLine` actually needs answered, could not be asked. Relabelling per line was the obvious
+ * fix and is the wrong one: the traveler print gate matches labels by exact string equality
+ * (`unsavedPresentExcluding`), so per-line labels would silently stop it recognising the section it
+ * exists to ignore.
+ *
+ * So the label stays the human name and the scope carries identity. A scope is opaque here and its
+ * shape is the caller's business; the convention at the call sites is `kind:id`
+ * (`serials:<lineId>`, `shipment-order:<shipperOrderId>`) so two kinds can never collide on a bare
+ * id. Sections that no control destroys piecemeal leave it undefined and are simply never in scope.
+ */
+type DirtySection = { label: string; scope?: string };
+
 /** Sections currently holding unsaved edits, keyed so one section going clean cannot clear another
- *  (two grids on one page are routine). The VALUE is the human label the prompt names. */
-const dirtySections = new Map<string, string>();
+ *  (two grids on one page are routine). */
+const dirtySections = new Map<string, DirtySection>();
 const listeners = new Set<() => void>();
 
 function notify(): void {
   for (const fn of listeners) fn();
 }
 
-/** Record that `key` holds unsaved edits, shown to the user as `label`. Re-marking the same key
- *  replaces its label rather than accumulating entries. */
-export function markUnsaved(key: string, label: string): void {
-  if (dirtySections.get(key) === label) return; // idempotent: a re-render must not wake the UI
-  dirtySections.set(key, label);
+/**
+ * Record that `key` holds unsaved edits, shown to the user as `label` and — when the rows belong to
+ * one destroyable region — carrying `scope`. Re-marking the same key replaces its entry rather than
+ * accumulating entries.
+ *
+ * The idempotence check compares BOTH fields. It used to be `get(key) === label`, which an object
+ * value would make false on every render (a fresh object is never `===` a stored one), and that
+ * would notify on every render of every dirty section — a re-render storm behind a guard whose
+ * whole point is to be quiet until something changes.
+ */
+export function markUnsaved(key: string, label: string, scope?: string): void {
+  const current = dirtySections.get(key);
+  if (current !== undefined && current.label === label && current.scope === scope) return;
+  dirtySections.set(key, { label, scope });
   notify();
 }
 
@@ -50,7 +79,7 @@ export function clearUnsaved(key: string): void {
 /** The labels of every section holding unsaved edits — de-duplicated and sorted, so a page with
  *  two dirty grids produces a stable sentence rather than one that depends on mount order. */
 export function unsavedLabels(): string[] {
-  return [...new Set(dirtySections.values())].sort();
+  return [...new Set([...dirtySections.values()].map((s) => s.label))].sort();
 }
 
 /** How many sections hold unsaved edits. A NUMBER rather than the label array because this is the
@@ -134,7 +163,40 @@ export function leavesCurrentPage(path: string, currentPath: string): boolean {
  * refusal someone notices rather than filed paper nobody does.
  */
 export function unsavedPresentExcluding(ignoreLabels: readonly string[]): boolean {
-  for (const label of dirtySections.values()) if (!ignoreLabels.includes(label)) return true;
+  for (const { label } of dirtySections.values()) if (!ignoreLabels.includes(label)) return true;
+  return false;
+}
+
+/**
+ * The two scope names in use, as functions rather than as strings typed twice.
+ *
+ * A scope only works if the section that REGISTERS it and the control that ASKS about it spell it
+ * identically, and nothing about a mismatch is loud: `unsavedPresentInScope` would simply answer
+ * false and the refusal would quietly stop refusing. That is the failure a shared leaf removes
+ * outright — the `permission-constants.ts` precedent — so the string exists once and both ends
+ * import it. The `kind:` prefix keeps two kinds from colliding on a bare id.
+ */
+export const serialsScope = (lineId: string): string => `serials:${lineId}`;
+export const shipmentOrderScope = (shipperOrderId: string): string => `shipment-order:${shipperOrderId}`;
+
+/**
+ * Whether anything registered under exactly this `scope` is holding unsaved edits.
+ *
+ * The counterpart to `unsavedPresentExcluding`, and the opposite direction: that one is a DENY list
+ * answering "is anything I did not exclude dirty", which fails safe by over-reporting. This one
+ * asks about a NAMED region and reports nothing else, because it backs a refusal on a control that
+ * destroys exactly that region — `removeLine` takes one line's serials, `removeOrderFromShipper`
+ * takes one order's three grids. Widening it to the page would refuse those controls over sections
+ * the write provably cannot touch (Containers, Charges and Loads carry no `lineId` at all), and a
+ * guard that fires over nothing is the guard people learn to click through.
+ *
+ * An UNKNOWN scope answers false, and that is the honest answer rather than a fail-open: this asks
+ * "is this named region dirty", and a region nothing registered is not dirty. What keeps it from
+ * silently covering nothing is the sweep — a `gate` verdict is proved per control, so a scope that
+ * stops matching any registration leaves the gate computed but refusing nothing, which reds.
+ */
+export function unsavedPresentInScope(scope: string): boolean {
+  for (const section of dirtySections.values()) if (section.scope === scope) return true;
   return false;
 }
 

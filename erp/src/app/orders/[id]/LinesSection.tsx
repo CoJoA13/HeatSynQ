@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
+import { serialsScope, unsavedPresentInScope } from "@/lib/unsaved-guard";
 import { Combobox, type ComboboxOption } from "../new/Combobox";
 import { computeLineWeight } from "../new/OrderLineCard";
 import {
@@ -219,6 +220,31 @@ export function LinesSection({
   }
 
   async function removeLine(line: OrderLine) {
+    // #293. This DELETE hard-deletes every OrderSerial of the line (`removeLine`, order-edit.ts),
+    // which is exactly the rows this line's serials editor is holding — so it REPLACES server rows
+    // an editor owns and CLAUDE.md's rule applies: refuse while they are dirty, before the request.
+    // The old prompt named only the line and consulted the registry not at all, so typed serials
+    // were destroyed silently.
+    //
+    // SCOPED, not page-wide, and that is the point of the scope existing. Only `OrderSerial` carries
+    // a `lineId`; Containers, Charges and Loads cannot be touched by this write, and a bare
+    // `useUnsavedPresent()` would refuse over all three — a refusal nobody can explain is the one
+    // people learn to work around. Read live here rather than through the hook because the answer
+    // wanted is the one at CLICK time, and the line is chosen by the click.
+    //
+    // THE ROUTE OUT IS CLUMSY, and that is recorded rather than claimed away. CLAUDE.md's own line
+    // is that a guard the operator cannot clear is worse than no guard; this one CAN be cleared —
+    // save the serials, or reload the page — but no grid on this tree offers a Discard control, so
+    // an operator who wants to remove a line whose serials they were mid-typing has to save rows
+    // they are about to delete. It is clearable, so it is not the unclearable case #276 rejected,
+    // and refusing is still right because the alternative destroys typed work silently. A per-grid
+    // discard is the real fix and is filed as #309.
+    const lineSerialsUnsaved = unsavedPresentInScope(serialsScope(line.id));
+    if (lineSerialsUnsaved) {
+      onError(`${lineLabel(line)} has unsaved serials. Removing the line deletes them, so save them ` +
+        `first — or reload the page to discard them.`);
+      return;
+    }
     if (!confirm(`Remove ${line.part.customer.code} · ${line.part.partNumber} (${lineLabel(line)}) from this order?`)) return;
     try {
       await applyMutation(() =>

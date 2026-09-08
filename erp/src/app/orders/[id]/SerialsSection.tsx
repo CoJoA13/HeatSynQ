@@ -7,6 +7,7 @@ import { expandSerialRange } from "@/lib/serial-range";
 import { findDuplicateSerials } from "../new/OrderLineCard";
 import type { ApplyMutation, OrderLine, OrderMutationResult, OrderSerial } from "./page";
 import { SaveButton } from "@/components/SaveButton";
+import { serialsScope } from "@/lib/unsaved-guard";
 
 type Fields = { serial: string; description: string };
 
@@ -139,7 +140,11 @@ function LineSerialsEditor({
           Duplicate serial{dupes.size > 1 ? "s" : ""}: {[...dupes].join(", ")}
         </p>
       )}
-      <SaveButton label="Save serials" section="Serials" gate={editGate}
+      {/* The scope is what lets LinesSection's Remove refuse on THIS line's serials and no others
+          (#293). Every line's editor registers the same human label "Serials", so the label alone
+          could never name one of them; relabelling per line would have scoped it and broken the
+          traveler print gate, which matches labels by exact equality. */}
+      <SaveButton label="Save serials" section="Serials" scope={serialsScope(line.id)} gate={editGate}
                     dirty={grid.dirty} alsoUnsaved={rangeInput.trim() !== ""}
                     onSave={() => void save()} />
     </div>

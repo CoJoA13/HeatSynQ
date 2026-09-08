@@ -60,6 +60,53 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**2026-09-07 (third) — THE UNSAVED REGISTRY LEARNED TO NAME A REGION, AND THE TWO GAPS #277 FOUND
+ARE CLOSED (#297 ruled, #293, #294).** The rule paragraph in CLAUDE.md had contradicted itself for
+three phases — *a destructive control must REFUSE, never merely warn*, and, a few clauses later, a
+list of in-page destroyers that legitimately ASK, with load re-split named on both sides. #277
+recorded the tension rather than resolving it, because a mechanical sweep cannot be written against
+a rule that puts one control on both sides of itself. **Owner ruling: the line is not refuse-vs-ask,
+it is whether the destroyed rows are the ones the operator NAMED.** Re-split recomputes the loads
+because they clicked re-split and reverse replaces the shipment because they clicked reverse — the
+prompt confirms the action. `removeLine` and `removeOrderFromShipper` destroy a DIFFERENT section's
+rows as a side effect, so they refuse.
+
+**Refusing was not usable until the registry could name a region, which is the real work here.** The
+order hub mounts one serials editor PER LINE and every one registers the identical label
+`"Serials"`, so the only question `removeLine` needs answered — *are THIS line's serials dirty* —
+could not be asked at all: the registry offered "is anything dirty" and "is anything outside these
+LABELS dirty", and a page-wide refusal would have blocked removing a line because an unrelated
+Charges grid was dirty. Only `OrderSerial` carries a `lineId`, so that refusal fires over three
+sections the write provably cannot touch, and a refusal nobody can explain is the one people work
+around. So a registration now carries an optional `scope` beside its human label —
+`serialsScope(lineId)`, `shipmentOrderScope(shipperOrderId)`, functions in the leaf so the two ends
+cannot drift on a string — and `unsavedPresentInScope` answers about that region alone. **Scoping by
+RELABELLING was the obvious fix and is the wrong one**: the traveler print gate matches labels by
+exact equality, so per-line labels would silently stop it recognising the section it exists to
+ignore. The label stays the human name; the scope carries identity.
+
+**Two vacuities were found by mutation on this branch, and both are now closed.** (1) A scoped gate
+has TWO ends, and every assertion in the sweep only watched one. Deleting `scope={serialsScope(…)}`
+from the registration left the gate still tainted, still refusing, and every test green — while the
+predicate matched nothing, answered false forever, and #293's refusal quietly stopped refusing. A
+second sweep assertion now proves each scope helper is BOTH registered and asked about. (2) The ask
+proof was file-scoped, and `ShipmentDetail` already calls `confirmDiscard` inside `reverseAction` —
+so marking remove-order `{ confirmDiscard: true }` would have gone green **with no production change
+at all**, a test blessing a no-op. `asksBeforeRequest` now ties the ask to the function that issues
+THAT route's request: either it asks itself, or every local reference to it is guarded by one, with
+an anonymous or component-level issuer failing closed. Simulating that exact vacuity is one of the
+eight mutations run against this change; all eight red, baseline green.
+
+The pinned count of known-unguarded controls goes **2 → 0**, and it stays a PIN rather than a floor
+so a fixed gap cannot leave a stale exemption behind either. Gates: `tsc` and `eslint` clean, the
+vitest suite green, E2E re-run because two controls the flows drive changed behaviour. CLAUDE.md's
+rule paragraph now states the ruling instead of contradicting itself, and spec §15 carries the row.
+**One honest cost is recorded rather than claimed away, and filed as #309**: no grid on this tree
+offers a DISCARD control, so the only ways to clear either refusal are to save the rows or reload
+the page — and "save the serials you are about to delete" is an absurd instruction even though it
+works. It is clearable, so it is not the unclearable case #276 rejected, and refusing still beats
+destroying typed work in silence; a per-grid discard is the real fix.
+
 **2026-09-07 (second) — AND CANARY ALREADY FIXES IT: THE VERSION TO TARGET IS 16.4.0 (#209).**
 Next's issue template says to test canary before filing, so the same probe was pointed at
 `16.4.0-canary.19` before anything went upstream. It is not merely fixed — **it is a third cheaper
